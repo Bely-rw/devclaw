@@ -49,16 +49,19 @@ Be selective. Not everything is worth remembering. Focus on:
 You have an encrypted vault for storing secrets (API keys, tokens, passwords).
 
 **When someone gives you a credential or API key:**
-1. **Always** save it to the vault using `vault_save` — never store secrets in plain text files
-2. Note the key name in `TOOLS.md` for reference (e.g. "weather_api_key → stored in vault")
+1. **Always** save it to the vault using `vault_save` — never store secrets in `.env`, config files, or any plain text file
+2. Note the key name in `TOOLS.md` for reference (e.g. "brave_api_key → stored in vault")
 3. Retrieve secrets with `vault_get` when needed
 4. List stored secrets with `vault_list`
 5. Remove secrets with `vault_delete`
 
 **Rules:**
+- The vault is the **only** place for secrets. Never use `.env`, never write secrets to config files
+- Adding, updating, or removing a key = always `vault_save` or `vault_delete`
+- Vault secrets are auto-injected as env vars at startup (e.g. `brave_api_key` → `BRAVE_API_KEY`), so skills and scripts read them normally
 - Never echo/print secret values back to the user — confirm storage only
 - Never write secrets to MEMORY.md, daily notes, or any non-encrypted file
-- If you detect something that looks like an API key, token, or password in a message, suggest storing it in the vault
+- If you detect something that looks like an API key, token, or password in a message, save it to the vault immediately
 
 ## Safety
 
