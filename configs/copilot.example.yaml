@@ -7,13 +7,40 @@
 # ── Assistant ──────────────────────────────────────────────
 name: "Copilot"
 trigger: "@copilot"                    # Keyword that activates the bot
-model: "gpt-4o-mini"                   # LLM model
+model: "gpt-5-mini"                    # LLM model (see options below)
 timezone: "America/Sao_Paulo"
 language: "pt-BR"
 instructions: |
   You are a helpful personal assistant.
   Be concise and practical in your responses.
   Respond in Portuguese when the user writes in Portuguese.
+
+# ── API Provider ──────────────────────────────────────────
+# OpenAI-compatible endpoint. Supports OpenAI, Anthropic, GLM, etc.
+api:
+  base_url: "https://api.openai.com/v1"        # OpenAI (default)
+  api_key: "${GOCLAW_API_KEY}"                  # NEVER hardcode — use .env file
+  provider: ""                                  # Auto-detected from URL
+  #
+  # Available models:
+  #
+  # GLM (api.z.ai):
+  #   glm-4.7-flash    — fast, low cost (default)
+  #   glm-4.7-flashx   — fast with extended context
+  #   glm-4.7          — balanced capability
+  #   glm-5            — most capable GLM
+  #
+  # OpenAI:
+  #   gpt-5            — latest flagship
+  #   gpt-5-mini       — fast and cost-effective
+  #   gpt-4o           — great all-around
+  #   gpt-4o-mini      — fast and cheap
+  #   gpt-4.5-preview  — enhanced reasoning
+  #
+  # Anthropic:
+  #   claude-opus-4.6  — most capable
+  #   claude-opus-4.5  — previous flagship
+  #   claude-sonnet-4.5 — balanced performance
 
 # ── Access Control ─────────────────────────────────────────
 # Who can use the bot. Default: deny (only authorized contacts).

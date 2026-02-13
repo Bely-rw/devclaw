@@ -1,8 +1,8 @@
 # GoClaw
 
-**Open-source personal AI assistant framework in Go.** CLI + messaging channels (WhatsApp, Discord, Telegram). Built on the [AgentGo](https://github.com/jholhewres/agent-go) SDK.
+**AI assistant. Any OS.**
 
-Single binary. Zero runtime dependencies. Cross-compilable.
+Open-source personal AI assistant framework in Go. Single binary, zero runtime dependencies, cross-compilable to Linux, macOS, Windows, ARM, and anything Go targets. CLI + messaging channels (WhatsApp, Discord, Telegram). Built on the [AgentGo](https://github.com/jholhewres/agent-go) SDK.
 
 ## About
 

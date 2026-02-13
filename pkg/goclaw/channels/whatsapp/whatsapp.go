@@ -18,11 +18,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/jholhewres/goclaw/pkg/goclaw/channels"
+	qrterminal "github.com/mdp/qrterminal/v3"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
@@ -136,6 +138,9 @@ func (w *WhatsApp) Connect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("getting device: %w", err)
 	}
+
+	// Set device name shown in WhatsApp linked devices list.
+	store.SetOSInfo("GoClaw", [3]uint32{1, 0, 0})
 
 	// Create client.
 	w.client = whatsmeow.NewClient(device, waLog.Noop)
@@ -344,8 +349,10 @@ func (w *WhatsApp) loginWithQR(ctx context.Context) error {
 	for evt := range qrChan {
 		switch evt.Event {
 		case "code":
-			// Print QR code to terminal.
-			fmt.Println("\n" + evt.Code + "\n")
+			// Render QR code as Unicode block art in the terminal.
+			fmt.Println()
+			qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+			fmt.Println()
 			w.logger.Info("whatsapp: QR code displayed, waiting for scan...")
 
 		case "success":

@@ -25,6 +25,7 @@ Exemplos:
 	rootCmd.AddCommand(
 		newChatCmd(),
 		newServeCmd(),
+		newSetupCmd(),
 		newScheduleCmd(),
 		newSkillCmd(),
 		newConfigCmd(),

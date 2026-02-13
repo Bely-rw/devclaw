@@ -75,19 +75,42 @@ func (w *WhatsApp) handleMessageEvt(evt *events.Message) {
 		return
 	}
 
+	// Resolve sender JID — WhatsApp may use LID (Linked Identity) format
+	// instead of phone numbers. We resolve to phone JID for access control.
+	senderJID := evt.Info.Sender
+	resolvedSender := senderJID.String()
+	if senderJID.Server == "lid" && w.client != nil && w.client.Store != nil {
+		if altJID, err := w.client.Store.GetAltJID(w.ctx, senderJID); err == nil && !altJID.IsEmpty() {
+			resolvedSender = altJID.String()
+			w.logger.Debug("whatsapp: resolved LID to phone",
+				"lid", senderJID.String(), "phone", resolvedSender)
+		}
+	}
+
+	// Resolve chat JID (for DMs, chat may also be in LID format).
+	chatJID := evt.Info.Chat
+	resolvedChat := chatJID.String()
+	if chatJID.Server == "lid" && w.client != nil && w.client.Store != nil {
+		if altJID, err := w.client.Store.GetAltJID(w.ctx, chatJID); err == nil && !altJID.IsEmpty() {
+			resolvedChat = altJID.String()
+		}
+	}
+
 	// Build the incoming message.
 	msg := &channels.IncomingMessage{
 		ID:        string(evt.Info.ID),
 		Channel:   "whatsapp",
-		From:      evt.Info.Sender.String(),
+		From:      resolvedSender,
 		FromName:  evt.Info.PushName,
-		ChatID:    evt.Info.Chat.String(),
+		ChatID:    resolvedChat,
 		IsGroup:   isGroup,
 		Timestamp: evt.Info.Timestamp,
 		Metadata: map[string]any{
-			"sender_jid": evt.Info.Sender.String(),
-			"chat_jid":   evt.Info.Chat.String(),
-			"push_name":  evt.Info.PushName,
+			"sender_jid":  senderJID.String(),
+			"sender_lid":  senderJID.String(),
+			"sender_phone": resolvedSender,
+			"chat_jid":    chatJID.String(),
+			"push_name":   evt.Info.PushName,
 		},
 	}
 

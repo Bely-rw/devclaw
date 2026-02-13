@@ -422,19 +422,51 @@ func (am *AccessManager) PendingMessage() string {
 // normalizeJID strips whitespace and ensures consistent format.
 func normalizeJID(jid string) string {
 	jid = strings.TrimSpace(jid)
+	if jid == "" {
+		return jid
+	}
+
+	// Strip device suffix (e.g. "5511999999999:5@s.whatsapp.net" → "5511999999999@s.whatsapp.net").
+	if atIdx := strings.Index(jid, "@"); atIdx != -1 {
+		userPart := jid[:atIdx]
+		serverPart := jid[atIdx:]
+		if colonIdx := strings.Index(userPart, ":"); colonIdx != -1 {
+			userPart = userPart[:colonIdx]
+		}
+		// Normalize Brazilian numbers (remove extra 9th digit).
+		userPart = normalizeBRPhone(userPart)
+		return userPart + serverPart
+	}
 
 	// If it's just a phone number, add WhatsApp suffix.
-	if jid != "" && !strings.Contains(jid, "@") {
-		digits := strings.Map(func(r rune) rune {
-			if r >= '0' && r <= '9' {
-				return r
-			}
-			return -1
-		}, jid)
-		if len(digits) >= 10 {
-			return digits + "@s.whatsapp.net"
+	digits := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
 		}
+		return -1
+	}, jid)
+	if len(digits) >= 10 {
+		digits = normalizeBRPhone(digits)
+		return digits + "@s.whatsapp.net"
 	}
 
 	return jid
+}
+
+// normalizeBRPhone normalizes Brazilian phone numbers to the format WhatsApp uses.
+// Brazil added a 9th digit to mobile numbers, but WhatsApp often stores without it.
+// Example: "5582987015132" (13 digits with 9) → "558287015132" (12 digits without 9).
+func normalizeBRPhone(phone string) string {
+	// Only applies to Brazilian numbers (country code 55).
+	if !strings.HasPrefix(phone, "55") {
+		return phone
+	}
+
+	// 13 digits = 55 + 2-digit area code + 9 + 8-digit number.
+	// The 5th digit (index 4) is the extra "9" that WhatsApp strips.
+	if len(phone) == 13 && phone[4] == '9' {
+		return phone[:4] + phone[5:]
+	}
+
+	return phone
 }

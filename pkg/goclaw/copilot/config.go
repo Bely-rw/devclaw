@@ -16,8 +16,11 @@ type Config struct {
 	// Trigger is the keyword that activates the bot (e.g. "@copilot").
 	Trigger string `yaml:"trigger"`
 
-	// Model is the LLM model to use (e.g. "gpt-4o-mini").
+	// Model is the LLM model to use (e.g. "glm-4.7-flash").
 	Model string `yaml:"model"`
+
+	// API configures the LLM provider endpoint.
+	API APIConfig `yaml:"api"`
 
 	// Instructions are the base system prompt instructions.
 	Instructions string `yaml:"instructions"`
@@ -60,6 +63,24 @@ type Config struct {
 
 	// Logging configures log output.
 	Logging LoggingConfig `yaml:"logging"`
+}
+
+// APIConfig configures the LLM provider endpoint and credentials.
+type APIConfig struct {
+	// BaseURL is the API base URL (OpenAI-compatible endpoint).
+	// Examples:
+	//   https://api.openai.com/v1           (OpenAI)
+	//   https://api.z.ai/api/anthropic      (GLM / Anthropic proxy)
+	//   https://api.anthropic.com/v1        (Anthropic direct)
+	BaseURL string `yaml:"base_url"`
+
+	// APIKey is the authentication key for the provider.
+	// Can also be set via the GOCLAW_API_KEY environment variable.
+	APIKey string `yaml:"api_key"`
+
+	// Provider hints which SDK to use ("openai", "anthropic", "glm").
+	// Auto-detected from base_url if omitted.
+	Provider string `yaml:"provider"`
 }
 
 // ChannelsConfig holds configuration for all channels.
@@ -150,9 +171,12 @@ type LoggingConfig struct {
 // DefaultConfig returns the default assistant configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		Name:         "Copilot",
-		Trigger:      "@copilot",
-		Model:        "gpt-4o-mini",
+		Name:    "Copilot",
+		Trigger: "@copilot",
+		Model:   "gpt-5-mini",
+		API: APIConfig{
+			BaseURL: "https://api.openai.com/v1",
+		},
 		Instructions: "You are a helpful personal assistant. Be concise and practical.",
 		Timezone:     "America/Sao_Paulo",
 		Language:     "pt-BR",

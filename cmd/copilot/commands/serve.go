@@ -1,12 +1,15 @@
 package commands
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jholhewres/goclaw/pkg/goclaw/channels/whatsapp"
 	"github.com/jholhewres/goclaw/pkg/goclaw/copilot"
@@ -55,6 +58,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	logger := slog.New(handler)
 
+	// ── Resolve secrets ──
+	copilot.ResolveAPIKey(cfg, logger)
+	copilot.AuditSecrets(cfg, logger)
+
 	// ── Create assistant ──
 	assistant := copilot.New(cfg, logger)
 
@@ -102,13 +109,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	<-sigChan
 
 	logger.Info("shutdown signal received, stopping...")
-	pluginLoader.Shutdown()
-	assistant.Stop()
+
+	// Graceful shutdown with timeout.
+	done := make(chan struct{})
+	go func() {
+		pluginLoader.Shutdown()
+		assistant.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Info("shutdown complete")
+	case <-time.After(10 * time.Second):
+		logger.Warn("shutdown timed out after 10s, forcing exit")
+	}
 
 	return nil
 }
 
-// resolveConfig loads config from file or uses defaults.
+// resolveConfig loads config from file, runs interactive setup if missing.
 func resolveConfig(cmd *cobra.Command) (*copilot.Config, error) {
 	configPath, _ := cmd.Root().PersistentFlags().GetString("config")
 
@@ -131,9 +151,44 @@ func resolveConfig(cmd *cobra.Command) (*copilot.Config, error) {
 		return cfg, nil
 	}
 
-	// No config file — use defaults.
-	slog.Info("no config file found, using defaults")
-	return copilot.DefaultConfig(), nil
+	// No config file — offer interactive setup before connecting.
+	fmt.Println()
+	fmt.Println("No configuration file found.")
+	fmt.Println("GoClaw requires a config.yaml before connecting to WhatsApp.")
+	fmt.Println()
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Run interactive setup now? (y/n) [y]: ")
+	answer := strings.TrimSpace(readInput(reader))
+
+	if answer != "" && strings.ToLower(answer) != "y" {
+		fmt.Println()
+		fmt.Println("Run 'copilot setup' or 'copilot config init' to create the configuration.")
+		return nil, fmt.Errorf("configuration required before starting")
+	}
+
+	// Run the interactive setup wizard.
+	if err := runInteractiveSetup(); err != nil {
+		return nil, fmt.Errorf("setup: %w", err)
+	}
+
+	// Try loading the freshly created config.
+	if found := copilot.FindConfigFile(); found != "" {
+		cfg, err := copilot.LoadConfigFromFile(found)
+		if err != nil {
+			return nil, fmt.Errorf("loading config from %s: %w", found, err)
+		}
+		slog.Info("config loaded after setup", "path", found)
+		return cfg, nil
+	}
+
+	return nil, fmt.Errorf("setup completado mas config.yaml não encontrado")
+}
+
+// readInput reads a line from stdin (used by resolveConfig prompt).
+func readInput(reader *bufio.Reader) string {
+	line, _ := reader.ReadString('\n')
+	return line
 }
 
 // shouldEnable checks if a channel should be enabled.

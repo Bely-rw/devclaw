@@ -100,17 +100,19 @@ func (m *Manager) Stop() {
 		m.cancel()
 	}
 
-	m.listenWg.Wait()
-
+	// Disconnect channels first — this closes their Receive() channels,
+	// which unblocks listenChannel goroutines.
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	for name, ch := range m.channels {
 		if err := ch.Disconnect(); err != nil {
 			m.logger.Error("error disconnecting channel",
 				"channel", name, "error", err)
 		}
 	}
+	m.mu.RUnlock()
+
+	// Now wait for listener goroutines to finish.
+	m.listenWg.Wait()
 
 	close(m.messages)
 	m.logger.Info("manager stopped")
@@ -185,11 +187,20 @@ func (m *Manager) HasChannels() bool {
 }
 
 // listenChannel listens for messages from a channel and forwards them
-// to the aggregated stream.
+// to the aggregated stream. Exits when the channel closes or context is cancelled.
 func (m *Manager) listenChannel(ch Channel) {
-	for msg := range ch.Receive() {
+	incoming := ch.Receive()
+	for {
 		select {
-		case m.messages <- msg:
+		case msg, ok := <-incoming:
+			if !ok {
+				return // Channel closed.
+			}
+			select {
+			case m.messages <- msg:
+			case <-m.ctx.Done():
+				return
+			}
 		case <-m.ctx.Done():
 			return
 		}

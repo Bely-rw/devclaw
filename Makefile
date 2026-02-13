@@ -1,4 +1,4 @@
-.PHONY: build run serve chat test lint clean install init help
+.PHONY: build run serve setup chat test lint clean install init help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
@@ -25,7 +25,11 @@ run: build
 ## serve: Alias for run
 serve: run
 
-## init: Create default config.yaml
+## setup: Interactive setup wizard
+setup: build
+	./bin/copilot setup
+
+## init: Create default config.yaml (non-interactive)
 init: build
 	./bin/copilot config init
 
@@ -68,10 +72,11 @@ docker-down:
 ## help: Show available commands
 help:
 	@echo "Usage:"
+	@echo "  make setup             # Interactive setup wizard"
 	@echo "  make run               # Build + serve (auto-detects config.yaml)"
 	@echo "  make run VERBOSE=1     # Build + serve with debug logs"
 	@echo "  make run CONFIG=x.yaml # Build + serve with specific config"
-	@echo "  make init              # Create default config.yaml"
+	@echo "  make init              # Create default config.yaml (non-interactive)"
 	@echo "  make validate          # Validate configuration"
 	@echo "  make chat MSG=\"hello\"  # Send a single message"
 	@echo ""

@@ -31,6 +31,9 @@ type Assistant struct {
 	// workspaceMgr manages isolated workspaces/profiles.
 	workspaceMgr *WorkspaceManager
 
+	// llmClient communicates with the LLM provider API.
+	llmClient *LLMClient
+
 	// skillRegistry manages available skills.
 	skillRegistry *skills.Registry
 
@@ -69,6 +72,7 @@ func New(cfg *Config, logger *slog.Logger) *Assistant {
 		channelMgr:     channels.NewManager(logger.With("component", "channels")),
 		accessMgr:      NewAccessManager(cfg.Access, logger),
 		workspaceMgr:   NewWorkspaceManager(cfg, cfg.Workspaces, logger),
+		llmClient:      NewLLMClient(cfg, logger),
 		skillRegistry:  skills.NewRegistry(logger.With("component", "skills")),
 		sessionStore:   NewSessionStore(logger.With("component", "sessions")),
 		promptComposer: NewPromptComposer(cfg),
@@ -186,6 +190,12 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 		"msg_id", msg.ID,
 	)
 
+	logger.Info("incoming message",
+		"content_preview", truncate(msg.Content, 50),
+		"type", msg.Type,
+		"is_group", msg.IsGroup,
+	)
+
 	// ── Step 0: Access control ──
 	// Check if the sender is authorized BEFORE anything else.
 	// This is the OpenClaw-style behavior: unknown contacts are silently ignored.
@@ -199,11 +209,14 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 			logger.Info("access pending, sent request message",
 				"from", msg.From)
 		} else {
-			logger.Debug("message ignored (access denied)",
-				"reason", accessResult.Reason)
+			logger.Info("message ignored (access denied)",
+				"reason", accessResult.Reason,
+				"from_raw", msg.From)
 		}
 		return
 	}
+
+	logger.Info("access granted", "level", accessResult.Level)
 
 	// ── Step 1: Admin commands ──
 	// Check for /commands BEFORE trigger check (commands always work).
@@ -253,8 +266,7 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 	prompt := a.composeWorkspacePrompt(workspace, session, msg.Content)
 
 	// ── Step 6: Execute agent ──
-	// TODO: Integrate with the real agent executor.
-	response := a.executeAgent(a.ctx, prompt, session)
+	response := a.executeAgent(a.ctx, prompt, session, msg.Content)
 
 	// ── Step 7: Validate output ──
 	if err := a.outputGuard.Validate(response); err != nil {
@@ -309,10 +321,24 @@ func (a *Assistant) composeWorkspacePrompt(ws *Workspace, session *Session, inpu
 }
 
 // executeAgent runs the LLM agent with the composed prompt.
-func (a *Assistant) executeAgent(_ context.Context, prompt string, _ *Session) string {
-	// TODO: Integrate with AgentGo SDK (agent.Run, tools, etc).
-	_ = prompt
-	return "GoClaw Copilot is under development. I'll be fully functional soon!"
+func (a *Assistant) executeAgent(ctx context.Context, systemPrompt string, session *Session, userMessage string) string {
+	history := session.RecentHistory(20)
+
+	response, err := a.llmClient.Complete(ctx, systemPrompt, history, userMessage)
+	if err != nil {
+		a.logger.Error("LLM call failed", "error", err)
+		return fmt.Sprintf("Sorry, I encountered an error: %v", err)
+	}
+
+	return response
+}
+
+// truncate returns the first n characters of s, adding "..." if truncated.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // sendReply sends a response to the original message's channel.

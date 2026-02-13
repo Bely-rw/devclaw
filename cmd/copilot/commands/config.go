@@ -1,8 +1,11 @@
 package commands
 
 import (
+	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/jholhewres/goclaw/pkg/goclaw/copilot"
 	"github.com/spf13/cobra"
@@ -26,6 +29,9 @@ Examples:
 		newConfigInitCmd(),
 		newConfigShowCmd(),
 		newConfigValidateCmd(),
+		newConfigSetKeyCmd(),
+		newConfigDeleteKeyCmd(),
+		newConfigKeyStatusCmd(),
 	)
 
 	return cmd
@@ -113,6 +119,133 @@ func newConfigValidateCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// newConfigSetKeyCmd stores the API key in the OS keyring.
+func newConfigSetKeyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "set-key",
+		Short: "Store API key in OS keyring (encrypted)",
+		Long: `Securely stores your API key in the operating system's native keyring.
+This is the most secure option — the key is encrypted by the OS
+and never stored as plaintext on disk.
+
+Linux:   GNOME Keyring / KDE Wallet / Secret Service
+macOS:   Keychain
+Windows: Credential Manager
+
+Examples:
+  copilot config set-key`,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if !copilot.KeyringAvailable() {
+				fmt.Println("OS keyring is not available on this system.")
+				fmt.Println("Make sure you have a keyring service running:")
+				fmt.Println("  Linux:   gnome-keyring-daemon or kwallet")
+				fmt.Println("  macOS:   Keychain (built-in)")
+				fmt.Println("  Windows: Credential Manager (built-in)")
+				return fmt.Errorf("keyring not available")
+			}
+
+			reader := bufio.NewReader(os.Stdin)
+
+			// Check if key already exists.
+			if existing := copilot.GetKeyring("api_key"); existing != "" {
+				masked := existing[:4] + "****" + existing[max(4, len(existing)-4):]
+				fmt.Printf("API key already in keyring: %s\n", masked)
+				fmt.Print("Overwrite? (y/n) [n]: ")
+				if ans := strings.TrimSpace(readKeyLine(reader)); strings.ToLower(ans) != "y" {
+					fmt.Println("Cancelled.")
+					return nil
+				}
+			}
+
+			fmt.Print("Enter API key: ")
+			key := strings.TrimSpace(readKeyLine(reader))
+			if key == "" {
+				return fmt.Errorf("no key provided")
+			}
+
+			logger := slog.Default()
+			if err := copilot.MigrateKeyToKeyring(key, logger); err != nil {
+				return err
+			}
+
+			fmt.Println()
+			fmt.Println("API key stored in OS keyring (encrypted).")
+			fmt.Println()
+			fmt.Println("You can now safely remove it from other locations:")
+			fmt.Println("  - Delete the GOCLAW_API_KEY line from .env")
+			fmt.Println("  - Set api_key: \"\" in config.yaml")
+			fmt.Println()
+			fmt.Println("The keyring is checked first, before .env or config.yaml.")
+
+			return nil
+		},
+	}
+}
+
+// newConfigDeleteKeyCmd removes the API key from the OS keyring.
+func newConfigDeleteKeyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete-key",
+		Short: "Remove API key from OS keyring",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := copilot.DeleteKeyring("api_key"); err != nil {
+				return fmt.Errorf("deleting from keyring: %w", err)
+			}
+			fmt.Println("API key removed from OS keyring.")
+			return nil
+		},
+	}
+}
+
+// newConfigKeyStatusCmd shows where the API key is stored.
+func newConfigKeyStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "key-status",
+		Short: "Show where the API key is loaded from",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			fmt.Println("API key resolution order:")
+			fmt.Println()
+
+			// 1. Keyring.
+			if copilot.KeyringAvailable() {
+				if val := copilot.GetKeyring("api_key"); val != "" {
+					masked := val[:min(4, len(val))] + "****" + val[max(0, len(val)-4):]
+					fmt.Printf("  1. [OK] OS keyring:   %s\n", masked)
+				} else {
+					fmt.Println("  1. [--] OS keyring:   (not set)")
+				}
+			} else {
+				fmt.Println("  1. [!!] OS keyring:   (not available)")
+			}
+
+			// 2. Environment variable.
+			if val := os.Getenv("GOCLAW_API_KEY"); val != "" {
+				masked := val[:min(4, len(val))] + "****" + val[max(0, len(val)-4):]
+				fmt.Printf("  2. [OK] GOCLAW_API_KEY: %s\n", masked)
+			} else {
+				fmt.Println("  2. [--] GOCLAW_API_KEY: (not set)")
+			}
+
+			if val := os.Getenv("OPENAI_API_KEY"); val != "" {
+				fmt.Println("  3. [OK] OPENAI_API_KEY: (set, fallback)")
+			} else {
+				fmt.Println("  3. [--] OPENAI_API_KEY: (not set)")
+			}
+
+			fmt.Println()
+			fmt.Println("Recommendation: use 'copilot config set-key' for maximum security.")
+
+			return nil
+		},
+	}
+}
+
+// readKeyLine reads a line for the config key commands.
+func readKeyLine(reader *bufio.Reader) string {
+	line, _ := reader.ReadString('\n')
+	return line
 }
 
 // loadConfig loads the config from the --config flag or auto-discovers it.
