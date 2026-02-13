@@ -16,7 +16,7 @@ endif
 
 ## build: Build the binary
 build:
-	go build $(LDFLAGS) -o bin/copilot ./cmd/copilot
+	CGO_ENABLED=1 go build -tags 'sqlite_fts5' $(LDFLAGS) -o bin/copilot ./cmd/copilot
 
 ## run: Build and start copilot serve
 run: build
@@ -55,7 +55,7 @@ clean:
 
 ## install: Install binary to GOPATH
 install:
-	go install $(LDFLAGS) ./cmd/copilot
+	CGO_ENABLED=1 go install -tags 'sqlite_fts5' $(LDFLAGS) ./cmd/copilot
 
 ## docker-build: Build Docker image
 docker-build:

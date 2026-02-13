@@ -161,6 +161,41 @@ func (m *ApprovalManager) Resolve(id, sessionID, resolverJID string, approved bo
 	}
 }
 
+// LatestPendingForSession returns the ID of the most recent pending approval
+// for the given session, or empty string if none. This allows "/approve" without
+// specifying the UUID — it resolves the latest pending request.
+func (m *ApprovalManager) LatestPendingForSession(sessionID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var latest *PendingApproval
+	for _, pa := range m.pending {
+		if pa.SessionID == sessionID {
+			if latest == nil || pa.CreatedAt.After(latest.CreatedAt) {
+				latest = pa
+			}
+		}
+	}
+	if latest != nil {
+		return latest.ID
+	}
+	return ""
+}
+
+// PendingCountForSession returns the number of pending approvals for a session.
+func (m *ApprovalManager) PendingCountForSession(sessionID string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	count := 0
+	for _, pa := range m.pending {
+		if pa.SessionID == sessionID {
+			count++
+		}
+	}
+	return count
+}
+
 // formatApprovalDescription builds a human-readable description of the tool action.
 func formatApprovalDescription(toolName string, args map[string]any) string {
 	switch toolName {

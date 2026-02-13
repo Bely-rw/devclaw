@@ -243,27 +243,45 @@ func (a *Assistant) usageCommand(args []string, msg *channels.IncomingMessage) s
 }
 
 func (a *Assistant) approveCommand(args []string, msg *channels.IncomingMessage) string {
-	if len(args) < 1 {
-		return "Usage: /approve <id>"
-	}
 	sessionID := msg.Channel + ":" + msg.ChatID
-	if a.approvalMgr.Resolve(args[0], sessionID, msg.From, true, "") {
-		return "Approved."
+
+	// If no ID provided, approve the most recent pending request for this session.
+	var targetID string
+	if len(args) >= 1 && args[0] != "" {
+		targetID = args[0]
+	} else {
+		targetID = a.approvalMgr.LatestPendingForSession(sessionID)
+		if targetID == "" {
+			return "No pending approvals."
+		}
+	}
+
+	if a.approvalMgr.Resolve(targetID, sessionID, msg.From, true, "") {
+		return "✅ Approved."
 	}
 	return "Approval not found or already resolved."
 }
 
 func (a *Assistant) denyCommand(args []string, msg *channels.IncomingMessage) string {
-	if len(args) < 1 {
-		return "Usage: /deny <id>"
-	}
-	reason := ""
-	if len(args) > 1 {
-		reason = strings.Join(args[1:], " ")
-	}
 	sessionID := msg.Channel + ":" + msg.ChatID
-	if a.approvalMgr.Resolve(args[0], sessionID, msg.From, false, reason) {
-		return "Denied."
+
+	// If no ID provided, deny the most recent pending request.
+	var targetID string
+	var reason string
+	if len(args) >= 1 && args[0] != "" {
+		targetID = args[0]
+		if len(args) > 1 {
+			reason = strings.Join(args[1:], " ")
+		}
+	} else {
+		targetID = a.approvalMgr.LatestPendingForSession(sessionID)
+		if targetID == "" {
+			return "No pending approvals."
+		}
+	}
+
+	if a.approvalMgr.Resolve(targetID, sessionID, msg.From, false, reason) {
+		return "❌ Denied."
 	}
 	return "Approval not found or already resolved."
 }

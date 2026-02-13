@@ -522,8 +522,32 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 		}
 	}
 
-	// ── Step 1b: Message queue (if session already processing, enqueue and return) ──
+	// ── Step 1a: Natural language approval ──
+	// If there are pending approvals for this session and the user sends
+	// a short affirmative/negative message, treat it as an approval/denial.
 	sessionID := msg.Channel + ":" + msg.ChatID
+	if a.approvalMgr.PendingCountForSession(sessionID) > 0 {
+		action := matchNaturalApproval(msg.Content)
+		if action != "" {
+			latestID := a.approvalMgr.LatestPendingForSession(sessionID)
+			if latestID != "" {
+				approved := action == "approve"
+				if a.approvalMgr.Resolve(latestID, sessionID, msg.From, approved, "") {
+					if approved {
+						a.sendReply(msg, "✅ Approved.")
+					} else {
+						a.sendReply(msg, "❌ Denied.")
+					}
+					logger.Info("natural language approval",
+						"action", action,
+						"duration_ms", time.Since(start).Milliseconds())
+					return
+				}
+			}
+		}
+	}
+
+	// ── Step 1b: Message queue (if session already processing, enqueue and return) ──
 	if a.messageQueue.IsProcessing(sessionID) {
 		if a.messageQueue.Enqueue(sessionID, msg) {
 			logger.Info("message enqueued (session busy)", "session", sessionID)
@@ -622,6 +646,45 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 // matchesTrigger checks if a message matches the activation keyword.
 // In DMs, the trigger is optional (always responds).
 // In groups, the trigger is required unless the group has its own trigger.
+// matchNaturalApproval checks if a short message matches common approval/denial
+// patterns in Portuguese and English. Returns "approve", "deny", or "".
+func matchNaturalApproval(content string) string {
+	text := strings.ToLower(strings.TrimSpace(content))
+
+	// Only match short messages (< 40 chars) to avoid false positives.
+	if len(text) > 40 {
+		return ""
+	}
+
+	approvePatterns := []string{
+		"aprovo", "aprovado", "aprova", "pode executar", "pode rodar",
+		"executa", "execute", "roda", "rode", "vai", "manda",
+		"sim", "yes", "ok", "pode", "go", "run", "approve",
+		"confirmo", "confirmado", "autorizo", "autorizado",
+		"libera", "liberado", "faz", "faça", "bora",
+	}
+
+	denyPatterns := []string{
+		"não", "nao", "no", "deny", "denied", "nega", "negado",
+		"cancela", "cancelado", "cancel", "para", "stop",
+		"bloqueia", "bloqueado", "não pode", "nao pode",
+	}
+
+	for _, p := range denyPatterns {
+		if text == p || strings.HasPrefix(text, p+" ") {
+			return "deny"
+		}
+	}
+
+	for _, p := range approvePatterns {
+		if text == p || strings.HasPrefix(text, p+" ") {
+			return "approve"
+		}
+	}
+
+	return ""
+}
+
 func (a *Assistant) matchesTrigger(content, trigger string, isGroup bool) bool {
 	// No trigger configured = always respond.
 	if trigger == "" {
