@@ -99,6 +99,15 @@ func (h *Heartbeat) Stop() {
 	}
 }
 
+// UpdateConfig updates the heartbeat config from hot-reload.
+func (h *Heartbeat) UpdateConfig(cfg HeartbeatConfig) {
+	h.config = cfg
+	h.logger.Info("heartbeat config hot-reloaded",
+		"enabled", cfg.Enabled,
+		"interval", cfg.Interval,
+	)
+}
+
 // loop is the main heartbeat goroutine.
 func (h *Heartbeat) loop(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)

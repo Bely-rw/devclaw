@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,9 +25,12 @@ import (
 
 // RegisterSkillCreatorTools registers skill management tools in the executor.
 // skillsDir is the workspace-level directory where user-created skills live.
-func RegisterSkillCreatorTools(executor *ToolExecutor, registry *skills.Registry, skillsDir string) {
+func RegisterSkillCreatorTools(executor *ToolExecutor, registry *skills.Registry, skillsDir string, logger *slog.Logger) {
 	if skillsDir == "" {
 		skillsDir = "./skills"
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	// init_skill
@@ -259,6 +263,127 @@ metadata: %s
 			}
 
 			return fmt.Sprintf("Skill '%s' test result:\n\n%s", name, result), nil
+		},
+	)
+
+	// install_skill — install skills from ClawHub, GitHub, URL, or local path.
+	installer := skills.NewInstaller(skillsDir, logger)
+
+	executor.Register(
+		MakeToolDefinition("install_skill", "Install a skill from ClawHub, GitHub, URL, or local path. Supports: ClawHub slugs (e.g. 'steipete/trello'), ClawHub URLs (https://clawhub.ai/user/skill), GitHub URLs (https://github.com/user/repo), HTTP URLs (zip or SKILL.md), and local paths.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"source": map[string]any{
+					"type":        "string",
+					"description": "Skill source: ClawHub slug (steipete/trello), GitHub URL, HTTP URL, or local path",
+				},
+			},
+			"required": []string{"source"},
+		}),
+		func(ctx context.Context, args map[string]any) (any, error) {
+			source, _ := args["source"].(string)
+			if source == "" {
+				return nil, fmt.Errorf("source is required")
+			}
+
+			installCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+
+			result, err := installer.Install(installCtx, source)
+			if err != nil {
+				return nil, fmt.Errorf("install failed: %w", err)
+			}
+
+			// Hot-reload: reload the registry to pick up the new skill.
+			reloadCtx, reloadCancel := context.WithTimeout(ctx, 10*time.Second)
+			defer reloadCancel()
+
+			reloaded, reloadErr := registry.Reload(reloadCtx)
+			reloadMsg := ""
+			if reloadErr != nil {
+				reloadMsg = fmt.Sprintf("\nWarning: skill catalog refresh failed: %v", reloadErr)
+			} else {
+				reloadMsg = fmt.Sprintf("\nSkill catalog refreshed (%d skills loaded).", reloaded)
+			}
+
+			status := "installed"
+			if !result.IsNew {
+				status = "updated"
+			}
+
+			return fmt.Sprintf("Skill '%s' %s successfully.\nPath: %s\nSource: %s%s",
+				result.Name, status, result.Path, result.Source, reloadMsg), nil
+		},
+	)
+
+	// search_skills — search ClawHub for available skills.
+	executor.Register(
+		MakeToolDefinition("search_skills", "Search the ClawHub skill registry for available skills by keyword.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{
+					"type":        "string",
+					"description": "Search query (e.g. 'calendar', 'trello', 'github')",
+				},
+			},
+			"required": []string{"query"},
+		}),
+		func(_ context.Context, args map[string]any) (any, error) {
+			query, _ := args["query"].(string)
+			if query == "" {
+				return nil, fmt.Errorf("query is required")
+			}
+
+			client := skills.NewClawHubClient("")
+			result, err := client.Search(query, 10)
+			if err != nil {
+				return nil, fmt.Errorf("ClawHub search failed: %w", err)
+			}
+
+			if len(result.Skills) == 0 {
+				return fmt.Sprintf("No skills found for %q on ClawHub.", query), nil
+			}
+
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("ClawHub results for %q (%d found):\n\n", query, len(result.Skills)))
+			for _, s := range result.Skills {
+				sb.WriteString(fmt.Sprintf("- **%s** (%s)\n  %s\n  Stars: %d | Downloads: %d\n  Install: `copilot skill install %s` or ask me to install it\n\n",
+					s.Name, s.Slug, s.Description, s.Stars, s.Downloads, s.Slug))
+			}
+			return sb.String(), nil
+		},
+	)
+
+	// remove_skill — remove an installed skill.
+	executor.Register(
+		MakeToolDefinition("remove_skill", "Remove an installed skill by name.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Name of the skill to remove",
+				},
+			},
+			"required": []string{"name"},
+		}),
+		func(_ context.Context, args map[string]any) (any, error) {
+			name, _ := args["name"].(string)
+			if name == "" {
+				return nil, fmt.Errorf("name is required")
+			}
+
+			targetDir := filepath.Join(skillsDir, sanitizeSkillName(name))
+			if _, err := os.Stat(targetDir); os.IsNotExist(err) {
+				return nil, fmt.Errorf("skill '%s' not found at %s", name, targetDir)
+			}
+
+			if err := os.RemoveAll(targetDir); err != nil {
+				return nil, fmt.Errorf("removing skill: %w", err)
+			}
+
+			registry.Remove(name)
+
+			return fmt.Sprintf("Skill '%s' removed successfully.", name), nil
 		},
 	)
 }

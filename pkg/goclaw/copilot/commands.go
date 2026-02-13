@@ -122,6 +122,26 @@ func (a *Assistant) HandleCommand(msg *channels.IncomingMessage) CommandResult {
 		}
 		return CommandResult{Response: a.groupCommand(args, msg), Handled: true}
 
+	// Approval commands (work even when session is busy).
+	case "/approve":
+		return CommandResult{Response: a.approveCommand(args, msg), Handled: true}
+	case "/deny":
+		return CommandResult{Response: a.denyCommand(args, msg), Handled: true}
+
+	// Session commands (require resolved workspace + session).
+	case "/stop":
+		return CommandResult{Response: a.stopCommand(msg), Handled: true}
+	case "/model":
+		return CommandResult{Response: a.modelCommand(args, msg), Handled: true}
+	case "/compact":
+		return CommandResult{Response: a.compactCommand(msg), Handled: true}
+	case "/new":
+		return CommandResult{Response: a.newCommand(msg), Handled: true}
+	case "/reset":
+		return CommandResult{Response: a.resetCommand(msg), Handled: true}
+	case "/think":
+		return CommandResult{Response: a.thinkCommand(args, msg), Handled: true}
+
 	default:
 		return CommandResult{Handled: false}
 	}
@@ -157,8 +177,180 @@ func (a *Assistant) helpCommand(isAdmin bool) string {
 		b.WriteString("/status - Bot status\n")
 	}
 
-	b.WriteString("/help - Show this message")
+	b.WriteString("\n*Approval:*\n")
+	b.WriteString("/approve <id> - Approve a pending tool execution\n")
+	b.WriteString("/deny <id> - Deny a pending tool execution\n\n")
+
+	b.WriteString("*Session:*\n")
+	b.WriteString("/stop - Stop active agent run\n")
+	b.WriteString("/model [name] - Show or change model\n")
+	b.WriteString("/compact - Compact session history\n")
+	b.WriteString("/new - Start new session (keep facts & config)\n")
+	b.WriteString("/reset - Full session reset\n")
+	b.WriteString("/usage [reset] - Show token usage\n")
+	b.WriteString("/think [off|low|medium|high] - Set thinking level\n")
+
+	b.WriteString("\n/help - Show this message")
 	return b.String()
+}
+
+func (a *Assistant) usageCommand(args []string, msg *channels.IncomingMessage) string {
+	resolved := a.workspaceMgr.Resolve(msg.Channel, msg.ChatID, msg.From, msg.IsGroup)
+	session := resolved.Session
+	isAdmin := a.accessMgr.GetLevel(msg.From) == AccessOwner || a.accessMgr.GetLevel(msg.From) == AccessAdmin
+
+	if len(args) > 0 {
+		arg := strings.ToLower(args[0])
+		if arg == "reset" {
+			session.ResetTokenUsage()
+			if a.usageTracker != nil {
+				a.usageTracker.ResetSession(session.ID)
+			}
+			return "Usage counters reset."
+		}
+		if arg == "global" {
+			if !isAdmin {
+				return "Permission denied."
+			}
+			if a.usageTracker != nil {
+				return a.usageTracker.FormatGlobalUsage()
+			}
+			return "Usage tracking not available."
+		}
+		// Session ID - admin only
+		if !isAdmin {
+			return "Permission denied."
+		}
+		if a.usageTracker != nil {
+			return a.usageTracker.FormatUsage(args[0])
+		}
+		return "Usage tracking not available."
+	}
+
+	// No args: show usage for current chat's session (Session + UsageTracker)
+	promptTok, completionTok, requests := session.GetTokenUsage()
+	total := promptTok + completionTok
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("*Token Usage*\n\n"))
+	b.WriteString(fmt.Sprintf("Prompt: %d | Completion: %d | Total: %d\n", promptTok, completionTok, total))
+	b.WriteString(fmt.Sprintf("Requests: %d\n", requests))
+	if a.usageTracker != nil {
+		if su := a.usageTracker.GetSession(session.ID); su != nil && su.EstimatedCostUSD > 0 {
+			b.WriteString(fmt.Sprintf("Est. cost: $%.4f\n", su.EstimatedCostUSD))
+		}
+	}
+	return b.String()
+}
+
+func (a *Assistant) approveCommand(args []string, msg *channels.IncomingMessage) string {
+	if len(args) < 1 {
+		return "Usage: /approve <id>"
+	}
+	sessionID := msg.Channel + ":" + msg.ChatID
+	if a.approvalMgr.Resolve(args[0], sessionID, msg.From, true, "") {
+		return "Approved."
+	}
+	return "Approval not found or already resolved."
+}
+
+func (a *Assistant) denyCommand(args []string, msg *channels.IncomingMessage) string {
+	if len(args) < 1 {
+		return "Usage: /deny <id>"
+	}
+	reason := ""
+	if len(args) > 1 {
+		reason = strings.Join(args[1:], " ")
+	}
+	sessionID := msg.Channel + ":" + msg.ChatID
+	if a.approvalMgr.Resolve(args[0], sessionID, msg.From, false, reason) {
+		return "Denied."
+	}
+	return "Approval not found or already resolved."
+}
+
+func (a *Assistant) stopCommand(msg *channels.IncomingMessage) string {
+	resolved := a.workspaceMgr.Resolve(msg.Channel, msg.ChatID, msg.From, msg.IsGroup)
+	if a.StopActiveRun(resolved.Workspace.ID, resolved.Session.ID) {
+		return "Agent stopped."
+	}
+	return "No active run."
+}
+
+func (a *Assistant) modelCommand(args []string, msg *channels.IncomingMessage) string {
+	resolved := a.workspaceMgr.Resolve(msg.Channel, msg.ChatID, msg.From, msg.IsGroup)
+	cfg := resolved.Session.GetConfig()
+
+	if len(args) == 0 {
+		model := cfg.Model
+		if model == "" {
+			model = resolved.Workspace.Model
+		}
+		if model == "" {
+			model = a.config.Model
+		}
+		return fmt.Sprintf("Current model: %s", model)
+	}
+
+	newModel := strings.TrimSpace(strings.Join(args, " "))
+	if newModel == "" {
+		return "Usage: /model [model_name]"
+	}
+	cfg.Model = newModel
+	resolved.Session.SetConfig(cfg)
+	return fmt.Sprintf("Model changed to: %s", newModel)
+}
+
+func (a *Assistant) compactCommand(msg *channels.IncomingMessage) string {
+	resolved := a.workspaceMgr.Resolve(msg.Channel, msg.ChatID, msg.From, msg.IsGroup)
+	oldLen, newLen := a.forceCompactSession(resolved.Session)
+	if oldLen < 5 {
+		return fmt.Sprintf("Session history too short to compact (%d entries).", oldLen)
+	}
+	return fmt.Sprintf("Session compacted. History: %d entries → %d entries.", oldLen, newLen)
+}
+
+func (a *Assistant) newCommand(msg *channels.IncomingMessage) string {
+	resolved := a.workspaceMgr.Resolve(msg.Channel, msg.ChatID, msg.From, msg.IsGroup)
+	resolved.Session.ClearHistory()
+	return "New session started. Facts and config preserved."
+}
+
+func (a *Assistant) resetCommand(msg *channels.IncomingMessage) string {
+	resolved := a.workspaceMgr.Resolve(msg.Channel, msg.ChatID, msg.From, msg.IsGroup)
+	session := resolved.Session
+	session.ClearHistory()
+	session.ClearFacts()
+	session.SetActiveSkills(nil)
+	session.ResetTokenUsage()
+	cfg := session.GetConfig()
+	cfg.Model = ""
+	cfg.ThinkingLevel = ""
+	session.SetConfig(cfg)
+	if a.usageTracker != nil {
+		a.usageTracker.ResetSession(session.ID)
+	}
+	return "Session reset completely."
+}
+
+func (a *Assistant) thinkCommand(args []string, msg *channels.IncomingMessage) string {
+	resolved := a.workspaceMgr.Resolve(msg.Channel, msg.ChatID, msg.From, msg.IsGroup)
+	session := resolved.Session
+
+	if len(args) == 0 {
+		level := session.GetThinkingLevel()
+		if level == "" {
+			level = "off"
+		}
+		return fmt.Sprintf("Thinking level: %s", level)
+	}
+
+	level := strings.ToLower(strings.TrimSpace(args[0]))
+	valid := map[string]bool{"off": true, "low": true, "medium": true, "high": true}
+	if !valid[level] {
+		return "Usage: /think [off|low|medium|high]"
+	}
+	session.SetThinkingLevel(level)
+	return fmt.Sprintf("Thinking level: %s", level)
 }
 
 func (a *Assistant) statusCommand() string {

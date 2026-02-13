@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -257,11 +258,13 @@ func (wm *WorkspaceManager) resolveWorkspaceID(chatID, senderJID string, isGroup
 }
 
 // applyWorkspaceConfig applies workspace overrides to a session.
+// Session values take precedence when set (e.g. /model overrides workspace model).
 func (wm *WorkspaceManager) applyWorkspaceConfig(ws *Workspace, session *Session) {
 	cfg := session.GetConfig()
 	changed := false
 
-	if ws.Model != "" && cfg.Model != ws.Model {
+	// Only apply workspace model when session has not set one (via /model).
+	if ws.Model != "" && cfg.Model == "" {
 		cfg.Model = ws.Model
 		changed = true
 	}
@@ -426,6 +429,75 @@ func (wm *WorkspaceManager) Get(wsID string) (*Workspace, bool) {
 	defer wm.mu.RUnlock()
 	ws, ok := wm.workspaces[wsID]
 	return ws, ok
+}
+
+// SessionInfo holds session metadata with workspace ID for API responses.
+type SessionInfo struct {
+	SessionMeta
+	WorkspaceID string
+}
+
+// ListAllSessions returns session metadata from all workspaces.
+func (wm *WorkspaceManager) ListAllSessions() []SessionInfo {
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+	var out []SessionInfo
+	for wsID, store := range wm.sessions {
+		for _, m := range store.ListSessions() {
+			out = append(out, SessionInfo{SessionMeta: m, WorkspaceID: wsID})
+		}
+	}
+	return out
+}
+
+// GetSessionByID finds a session by ID (format "channel:chatID") across all workspaces.
+func (wm *WorkspaceManager) GetSessionByID(sessionID string) (*Session, *Workspace) {
+	parts := strings.SplitN(sessionID, ":", 2)
+	if len(parts) != 2 {
+		return nil, nil
+	}
+	channel, chatID := parts[0], parts[1]
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+	for wsID, store := range wm.sessions {
+		if s := store.Get(channel, chatID); s != nil {
+			ws := wm.workspaces[wsID]
+			return s, ws
+		}
+	}
+	return nil, nil
+}
+
+// SessionCount returns the total number of sessions across all workspaces.
+func (wm *WorkspaceManager) SessionCount() int {
+	wm.mu.RLock()
+	defer wm.mu.RUnlock()
+	n := 0
+	for _, store := range wm.sessions {
+		n += store.Count()
+	}
+	return n
+}
+
+// DeleteSessionByID removes a session by ID across all workspaces.
+func (wm *WorkspaceManager) DeleteSessionByID(sessionID string) bool {
+	parts := strings.SplitN(sessionID, ":", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	channel, chatID := parts[0], parts[1]
+	wm.mu.RLock()
+	stores := make(map[string]*SessionStore)
+	for k, v := range wm.sessions {
+		stores[k] = v
+	}
+	wm.mu.RUnlock()
+	for _, store := range stores {
+		if store.Delete(channel, chatID) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetForUser returns the workspace assigned to a user JID.

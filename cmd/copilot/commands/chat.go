@@ -36,7 +36,7 @@ Examples:
 
 func runChat(cmd *cobra.Command, args []string) error {
 	// ── Load config ──
-	cfg, err := resolveConfig(cmd)
+	cfg, _, err := resolveConfig(cmd)
 	if err != nil {
 		return err
 	}

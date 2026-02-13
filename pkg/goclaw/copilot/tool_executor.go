@@ -42,20 +42,99 @@ type ToolResult struct {
 	Error      error
 }
 
+// sequentialTools are tools that must not run in parallel (shared state).
+var sequentialTools = map[string]bool{
+	"bash": true, "write_file": true, "edit_file": true,
+	"ssh": true, "scp": true, "exec": true, "set_env": true,
+}
+
 // ToolExecutor manages tool registration and dispatches tool calls.
 type ToolExecutor struct {
 	tools   map[string]*registeredTool
 	timeout time.Duration
 	logger  *slog.Logger
+	guard   *ToolGuard
 	mu      sync.RWMutex
+
+	// parallel enables concurrent execution of independent tools.
+	parallel    bool
+	maxParallel int
+
+	// callerLevel is the access level of the current caller.
+	// Set per-request via SetCallerContext before Execute.
+	callerLevel AccessLevel
+	callerJID   string
+
+	// sessionID is set per-request for approval matching (channel:chatID).
+	sessionID string
+
+	// confirmationRequester is called when a tool requires user approval.
+	// If nil, tools requiring confirmation are denied.
+	confirmationRequester func(sessionID, callerJID, toolName string, args map[string]any) (approved bool, err error)
 }
 
 // NewToolExecutor creates a new empty tool executor.
 func NewToolExecutor(logger *slog.Logger) *ToolExecutor {
 	return &ToolExecutor{
-		tools:   make(map[string]*registeredTool),
-		timeout: DefaultToolTimeout,
-		logger:  logger.With("component", "tool_executor"),
+		tools:        make(map[string]*registeredTool),
+		timeout:      DefaultToolTimeout,
+		logger:       logger.With("component", "tool_executor"),
+		callerLevel:  AccessOwner, // Default to owner for CLI usage.
+		parallel:     true,
+		maxParallel:  5,
+	}
+}
+
+// SetGuard configures the security guard for tool execution.
+func (e *ToolExecutor) SetGuard(guard *ToolGuard) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.guard = guard
+}
+
+// UpdateGuardConfig updates the tool guard config (for hot-reload).
+func (e *ToolExecutor) UpdateGuardConfig(cfg ToolGuardConfig) {
+	e.mu.Lock()
+	guard := e.guard
+	e.mu.Unlock()
+	if guard != nil {
+		guard.UpdateConfig(cfg)
+	}
+}
+
+// SetCallerContext sets the access level and JID for the current caller.
+// Must be called before Execute() in the message handling flow.
+func (e *ToolExecutor) SetCallerContext(level AccessLevel, jid string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.callerLevel = level
+	e.callerJID = jid
+}
+
+// SetSessionContext sets the session ID for approval matching (channel:chatID).
+// Must be set before Execute() when using approval flow.
+func (e *ToolExecutor) SetSessionContext(sessionID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sessionID = sessionID
+}
+
+// SetConfirmationRequester sets the callback for tools requiring user approval.
+// When a tool is in RequireConfirmation list, this callback is invoked.
+func (e *ToolExecutor) SetConfirmationRequester(fn func(sessionID, callerJID, toolName string, args map[string]any) (bool, error)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.confirmationRequester = fn
+}
+
+// Configure applies ToolExecutorConfig (parallel, max_parallel).
+func (e *ToolExecutor) Configure(cfg ToolExecutorConfig) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.parallel = cfg.Parallel
+	e.maxParallel = cfg.MaxParallel
+	if e.maxParallel <= 0 {
+		e.maxParallel = 5
 	}
 }
 
@@ -139,20 +218,58 @@ func (e *ToolExecutor) HasTool(name string) bool {
 
 // Execute dispatches a batch of tool calls to their registered handlers.
 // Each tool is executed with a per-tool timeout.
+// When Parallel is true and no sequential tools are in the batch, runs concurrently.
 // Returns results in the same order as the input calls.
 func (e *ToolExecutor) Execute(ctx context.Context, calls []ToolCall) []ToolResult {
-	results := make([]ToolResult, len(calls))
+	e.mu.RLock()
+	parallel := e.parallel
+	maxParallel := e.maxParallel
+	e.mu.RUnlock()
 
-	// Execute tools sequentially to avoid overwhelming resources.
-	// Future: add concurrency option for independent tools.
+	if !parallel || len(calls) <= 1 || e.hasSequentialTool(calls) {
+		return e.executeSequential(ctx, calls)
+	}
+	return e.executeParallel(ctx, calls, maxParallel)
+}
+
+func (e *ToolExecutor) hasSequentialTool(calls []ToolCall) bool {
+	for _, c := range calls {
+		if sequentialTools[c.Function.Name] {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *ToolExecutor) executeSequential(ctx context.Context, calls []ToolCall) []ToolResult {
+	results := make([]ToolResult, len(calls))
 	for i, call := range calls {
 		results[i] = e.executeSingle(ctx, call)
 	}
+	return results
+}
 
+func (e *ToolExecutor) executeParallel(ctx context.Context, calls []ToolCall, maxParallel int) []ToolResult {
+	results := make([]ToolResult, len(calls))
+	sem := make(chan struct{}, maxParallel)
+	var wg sync.WaitGroup
+
+	for i, call := range calls {
+		wg.Add(1)
+		go func(idx int, tc ToolCall) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[idx] = e.executeSingle(ctx, tc)
+		}(i, call)
+	}
+
+	wg.Wait()
 	return results
 }
 
 // executeSingle runs a single tool call and returns the result.
+// If a ToolGuard is configured, it checks permissions before executing.
 func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolResult {
 	name := call.Function.Name
 	result := ToolResult{
@@ -162,6 +279,9 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 
 	e.mu.RLock()
 	tool, ok := e.tools[name]
+	guard := e.guard
+	callerLevel := e.callerLevel
+	callerJID := e.callerJID
 	e.mu.RUnlock()
 
 	if !ok {
@@ -180,8 +300,62 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 		return result
 	}
 
+	// Security check: verify the caller has permission.
+	var check ToolCheckResult
+	if guard != nil {
+		check = guard.Check(name, callerLevel, args)
+		if !check.Allowed {
+			result.Content = fmt.Sprintf("Access denied: %s", check.Reason)
+			result.Error = fmt.Errorf("access denied: %s", check.Reason)
+			e.logger.Warn("tool blocked by guard",
+				"name", name,
+				"caller", callerJID,
+				"level", callerLevel,
+				"reason", check.Reason,
+			)
+			guard.AuditLog(name, callerJID, callerLevel, args, false, check.Reason)
+			return result
+		}
+	}
+
+	// Confirmation flow: if tool requires approval, request it before executing.
+	if check.RequiresConfirmation {
+		e.mu.RLock()
+		req := e.confirmationRequester
+		sessionID := e.sessionID
+		callerJID := e.callerJID
+		e.mu.RUnlock()
+
+		if req == nil {
+			result.Content = "Tool requires confirmation but no approval handler is configured."
+			result.Error = fmt.Errorf("confirmation required but no handler")
+			return result
+		}
+
+		approved, err := req(sessionID, callerJID, name, args)
+		if err != nil {
+			result.Content = fmt.Sprintf("Approval error: %v", err)
+			result.Error = err
+			return result
+		}
+		if !approved {
+			result.Content = "Denied by user."
+			e.logger.Info("tool denied by user", "name", name, "session", sessionID)
+			if guard != nil {
+				guard.AuditLog(name, callerJID, callerLevel, args, false, "DENIED_BY_USER")
+			}
+			return result
+		}
+	}
+
 	// Execute with timeout.
-	execCtx, cancel := context.WithTimeout(ctx, e.timeout)
+	timeout := e.timeout
+	// Give bash/ssh/scp longer timeouts.
+	if name == "bash" || name == "ssh" || name == "scp" || name == "exec" {
+		timeout = 5 * time.Minute
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	e.logger.Debug("executing tool", "name", name, "args_keys", mapKeys(args))
@@ -198,6 +372,9 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 			"error", err,
 			"duration_ms", duration.Milliseconds(),
 		)
+		if guard != nil {
+			guard.AuditLog(name, callerJID, callerLevel, args, true, "ERROR: "+err.Error())
+		}
 		return result
 	}
 
@@ -209,6 +386,11 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 		"duration_ms", duration.Milliseconds(),
 		"output_len", len(result.Content),
 	)
+
+	// Audit log successful execution.
+	if guard != nil {
+		guard.AuditLog(name, callerJID, callerLevel, args, true, result.Content)
+	}
 
 	return result
 }

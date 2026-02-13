@@ -1,0 +1,754 @@
+// Package copilot – subagent.go implements a subagent system that allows the
+// main agent to spawn independent child agents to handle tasks concurrently.
+//
+// Architecture (inspired by OpenClaw):
+//
+//	Main Agent ──spawn_subagent──▶ SubagentManager ──goroutine──▶ Child AgentRun
+//	                                   │                              │
+//	                                   ▼                              ▼
+//	                            SubagentRegistry           (runs with own session,
+//	                            tracks runs + results       limited tools, separate
+//	                                                        prompt, optional model)
+//
+// Subagents:
+//   - Run in isolated goroutines with their own session context.
+//   - Cannot spawn nested subagents (no recursion).
+//   - Have a configurable subset of tools (deny list applied).
+//   - Results are collected and can be polled or waited on.
+//   - Are announced back to the parent session when complete.
+package copilot
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// ─── Configuration ───
+
+// SubagentConfig configures the subagent system.
+type SubagentConfig struct {
+	// Enabled turns the subagent system on/off (default: true).
+	Enabled bool `yaml:"enabled"`
+
+	// MaxConcurrent is the max number of subagents running at the same time.
+	MaxConcurrent int `yaml:"max_concurrent"`
+
+	// MaxTurns is the max agent loop turns for each subagent (default: 15).
+	MaxTurns int `yaml:"max_turns"`
+
+	// TimeoutSeconds is the max execution time per subagent (default: 300 = 5min).
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+
+	// DeniedTools lists tool names that subagents cannot use.
+	// Default: ["spawn_subagent", "list_subagents", "wait_subagent"]
+	DeniedTools []string `yaml:"denied_tools"`
+
+	// Model overrides the LLM model for subagents (empty = use parent model).
+	Model string `yaml:"model"`
+}
+
+// DefaultSubagentConfig returns safe defaults.
+func DefaultSubagentConfig() SubagentConfig {
+	return SubagentConfig{
+		Enabled:        true,
+		MaxConcurrent:  4,
+		MaxTurns:       15,
+		TimeoutSeconds: 300,
+		DeniedTools: []string{
+			"spawn_subagent",
+			"list_subagents",
+			"wait_subagent",
+		},
+	}
+}
+
+// ─── Subagent Run ───
+
+// SubagentStatus represents the current state of a subagent run.
+type SubagentStatus string
+
+const (
+	SubagentStatusRunning   SubagentStatus = "running"
+	SubagentStatusCompleted SubagentStatus = "completed"
+	SubagentStatusFailed    SubagentStatus = "failed"
+	SubagentStatusTimeout   SubagentStatus = "timeout"
+)
+
+// SubagentRun tracks a single subagent execution.
+type SubagentRun struct {
+	// ID is a unique identifier for this run.
+	ID string `json:"id"`
+
+	// Label is a human-readable label for identification.
+	Label string `json:"label"`
+
+	// Task is the original task description given to the subagent.
+	Task string `json:"task"`
+
+	// Status is the current execution status.
+	Status SubagentStatus `json:"status"`
+
+	// Result is the final text response (set on completion).
+	Result string `json:"result,omitempty"`
+
+	// Error holds the error message if the subagent failed.
+	Error string `json:"error,omitempty"`
+
+	// Model is the LLM model used for this run.
+	Model string `json:"model,omitempty"`
+
+	// ParentSessionID is the session that spawned this subagent.
+	ParentSessionID string `json:"parent_session_id"`
+
+	// StartedAt is when the subagent started.
+	StartedAt time.Time `json:"started_at"`
+
+	// CompletedAt is when the subagent finished (zero if still running).
+	CompletedAt time.Time `json:"completed_at,omitempty"`
+
+	// Duration is the wall-clock execution time.
+	Duration time.Duration `json:"duration,omitempty"`
+
+	// TokensUsed tracks approximate token usage.
+	TokensUsed int `json:"tokens_used,omitempty"`
+
+	// cancel is the context cancel function for this run.
+	cancel context.CancelFunc `json:"-"`
+
+	// done is closed when the run finishes.
+	done chan struct{} `json:"-"`
+}
+
+// ─── Subagent Manager ───
+
+// SubagentManager orchestrates subagent lifecycle: spawning, tracking, and cleanup.
+type SubagentManager struct {
+	cfg    SubagentConfig
+	logger *slog.Logger
+
+	// runs tracks all subagent runs (active and completed).
+	runs map[string]*SubagentRun
+
+	// semaphore limits concurrent subagents.
+	semaphore chan struct{}
+
+	mu sync.RWMutex
+}
+
+// NewSubagentManager creates a new subagent manager.
+func NewSubagentManager(cfg SubagentConfig, logger *slog.Logger) *SubagentManager {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if cfg.MaxConcurrent <= 0 {
+		cfg.MaxConcurrent = 4
+	}
+	if cfg.MaxTurns <= 0 {
+		cfg.MaxTurns = 15
+	}
+	if cfg.TimeoutSeconds <= 0 {
+		cfg.TimeoutSeconds = 300
+	}
+
+	return &SubagentManager{
+		cfg:       cfg,
+		logger:    logger.With("component", "subagent-mgr"),
+		runs:      make(map[string]*SubagentRun),
+		semaphore: make(chan struct{}, cfg.MaxConcurrent),
+	}
+}
+
+// SpawnParams holds parameters for spawning a subagent.
+type SpawnParams struct {
+	Task            string
+	Label           string
+	Model           string
+	ParentSessionID string
+	TimeoutSeconds  int
+}
+
+// Spawn creates and starts a new subagent. Returns the run ID immediately.
+// The subagent executes in a background goroutine.
+func (m *SubagentManager) Spawn(
+	parentCtx context.Context,
+	params SpawnParams,
+	llmClient *LLMClient,
+	parentExecutor *ToolExecutor,
+	promptComposer *PromptComposer,
+) (*SubagentRun, error) {
+	if !m.cfg.Enabled {
+		return nil, fmt.Errorf("subagent system is disabled")
+	}
+
+	// Check concurrency limit.
+	activeCount := m.ActiveCount()
+	if activeCount >= m.cfg.MaxConcurrent {
+		return nil, fmt.Errorf("max concurrent subagents reached (%d/%d)", activeCount, m.cfg.MaxConcurrent)
+	}
+
+	// Create the run.
+	runID := uuid.New().String()[:8]
+	timeout := time.Duration(m.cfg.TimeoutSeconds) * time.Second
+	if params.TimeoutSeconds > 0 {
+		timeout = time.Duration(params.TimeoutSeconds) * time.Second
+	}
+
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
+
+	run := &SubagentRun{
+		ID:              runID,
+		Label:           params.Label,
+		Task:            params.Task,
+		Status:          SubagentStatusRunning,
+		Model:           params.Model,
+		ParentSessionID: params.ParentSessionID,
+		StartedAt:       time.Now(),
+		cancel:          cancel,
+		done:            make(chan struct{}),
+	}
+
+	if run.Label == "" {
+		run.Label = fmt.Sprintf("subagent-%s", runID)
+	}
+
+	m.mu.Lock()
+	m.runs[runID] = run
+	m.mu.Unlock()
+
+	m.logger.Info("spawning subagent",
+		"run_id", runID,
+		"label", run.Label,
+		"task_preview", truncate(params.Task, 80),
+		"timeout", timeout,
+	)
+
+	// Create a filtered tool executor for the subagent.
+	childExecutor := m.createChildExecutor(parentExecutor)
+
+	// Determine model (subagent override > spawn param > parent).
+	model := llmClient.model
+	if m.cfg.Model != "" {
+		model = m.cfg.Model
+	}
+	if params.Model != "" {
+		model = params.Model
+	}
+
+	// Create a child LLM client if model differs.
+	childLLM := llmClient
+	if model != llmClient.model {
+		childLLM = &LLMClient{
+			baseURL:    llmClient.baseURL,
+			apiKey:     llmClient.apiKey,
+			model:      model,
+			httpClient: llmClient.httpClient,
+			logger:     llmClient.logger,
+		}
+		run.Model = model
+	}
+
+	// Launch the subagent goroutine.
+	go func() {
+		defer close(run.done)
+		defer cancel()
+
+		// Acquire semaphore slot.
+		select {
+		case m.semaphore <- struct{}{}:
+			defer func() { <-m.semaphore }()
+		case <-ctx.Done():
+			m.completeRun(run, "", fmt.Errorf("timeout waiting for semaphore slot"))
+			return
+		}
+
+		m.logger.Info("subagent started",
+			"run_id", runID,
+			"model", model,
+		)
+
+		// Create an isolated session for the subagent.
+		session := &Session{
+			ID:           fmt.Sprintf("subagent:%s", runID),
+			Channel:      "subagent",
+			ChatID:       runID,
+			config:       SessionConfig{},
+			activeSkills: []string{},
+			facts:        []string{},
+			history:      []ConversationEntry{},
+			maxHistory:   50,
+			CreatedAt:    time.Now(),
+			lastActiveAt: time.Now(),
+		}
+
+		// Build a minimal system prompt for the subagent.
+		systemPrompt := m.buildSubagentPrompt(promptComposer, session, params.Task)
+
+		// Create and run the agent.
+		agent := NewAgentRun(childLLM, childExecutor, m.logger)
+		agent.maxTurns = m.cfg.MaxTurns
+
+		result, err := agent.Run(ctx, systemPrompt, nil, params.Task)
+
+		if ctx.Err() == context.DeadlineExceeded {
+			m.completeRun(run, result, fmt.Errorf("timeout after %v", timeout))
+		} else {
+			m.completeRun(run, result, err)
+		}
+	}()
+
+	return run, nil
+}
+
+// completeRun finalizes a subagent run with its result or error.
+func (m *SubagentManager) completeRun(run *SubagentRun, result string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	run.CompletedAt = time.Now()
+	run.Duration = run.CompletedAt.Sub(run.StartedAt)
+
+	if err != nil {
+		run.Status = SubagentStatusFailed
+		run.Error = err.Error()
+		if run.Result == "" {
+			run.Result = result // May have partial result.
+		}
+		m.logger.Error("subagent failed",
+			"run_id", run.ID,
+			"label", run.Label,
+			"error", err,
+			"duration", run.Duration,
+		)
+	} else {
+		run.Status = SubagentStatusCompleted
+		run.Result = result
+		m.logger.Info("subagent completed",
+			"run_id", run.ID,
+			"label", run.Label,
+			"duration", run.Duration,
+			"result_len", len(result),
+		)
+	}
+}
+
+// Wait blocks until the specified subagent run completes or the context is cancelled.
+// Returns the final run state.
+func (m *SubagentManager) Wait(ctx context.Context, runID string) (*SubagentRun, error) {
+	m.mu.RLock()
+	run, ok := m.runs[runID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("subagent run %q not found", runID)
+	}
+
+	select {
+	case <-run.done:
+		return run, nil
+	case <-ctx.Done():
+		return run, ctx.Err()
+	}
+}
+
+// Get returns a subagent run by ID.
+func (m *SubagentManager) Get(runID string) (*SubagentRun, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	run, ok := m.runs[runID]
+	return run, ok
+}
+
+// List returns all subagent runs (active and completed).
+func (m *SubagentManager) List() []*SubagentRun {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	runs := make([]*SubagentRun, 0, len(m.runs))
+	for _, run := range m.runs {
+		runs = append(runs, run)
+	}
+	return runs
+}
+
+// ActiveCount returns the number of currently running subagents.
+func (m *SubagentManager) ActiveCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	count := 0
+	for _, run := range m.runs {
+		if run.Status == SubagentStatusRunning {
+			count++
+		}
+	}
+	return count
+}
+
+// Stop cancels a running subagent.
+func (m *SubagentManager) Stop(runID string) error {
+	m.mu.RLock()
+	run, ok := m.runs[runID]
+	m.mu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("subagent run %q not found", runID)
+	}
+
+	if run.Status != SubagentStatusRunning {
+		return fmt.Errorf("subagent %q is not running (status: %s)", runID, run.Status)
+	}
+
+	run.cancel()
+	m.logger.Info("subagent stop requested", "run_id", runID)
+	return nil
+}
+
+// Cleanup removes completed/failed runs older than the given duration.
+func (m *SubagentManager) Cleanup(maxAge time.Duration) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+
+	for id, run := range m.runs {
+		if run.Status != SubagentStatusRunning && run.CompletedAt.Before(cutoff) {
+			delete(m.runs, id)
+			removed++
+		}
+	}
+
+	return removed
+}
+
+// ─── Tool Executor Filtering ───
+
+// createChildExecutor creates a filtered ToolExecutor for the subagent,
+// excluding denied tools to prevent recursion and unsafe operations.
+func (m *SubagentManager) createChildExecutor(parent *ToolExecutor) *ToolExecutor {
+	child := NewToolExecutor(m.logger)
+
+	// Copy the guard from parent.
+	if parent.guard != nil {
+		child.SetGuard(parent.guard)
+	}
+
+	// Copy caller context from parent.
+	child.callerLevel = parent.callerLevel
+	child.callerJID = parent.callerJID
+
+	// Build deny set.
+	denySet := make(map[string]bool)
+	for _, name := range m.cfg.DeniedTools {
+		denySet[name] = true
+	}
+	// Always deny subagent tools to prevent recursion.
+	denySet["spawn_subagent"] = true
+	denySet["list_subagents"] = true
+	denySet["wait_subagent"] = true
+	denySet["stop_subagent"] = true
+
+	// Copy allowed tools from parent.
+	parent.mu.RLock()
+	for name, rt := range parent.tools {
+		if denySet[name] {
+			continue
+		}
+		child.tools[name] = rt
+	}
+	parent.mu.RUnlock()
+
+	m.logger.Debug("child executor created",
+		"parent_tools", len(parent.tools),
+		"child_tools", len(child.tools),
+		"denied", len(denySet),
+	)
+
+	return child
+}
+
+// buildSubagentPrompt creates a focused system prompt for the subagent.
+func (m *SubagentManager) buildSubagentPrompt(composer *PromptComposer, session *Session, task string) string {
+	// Start with a minimal but focused prompt.
+	base := composer.Compose(session, task)
+
+	subagentInstructions := fmt.Sprintf(`
+## Subagent Mode
+
+You are a subagent — a focused worker spawned by the main agent to handle a specific task.
+
+### Rules:
+- Focus ONLY on the task assigned to you.
+- Be concise and efficient; avoid unnecessary conversation.
+- You cannot spawn other subagents.
+- Complete the task and provide a clear, structured result.
+- If you encounter an error, explain what went wrong clearly.
+
+### Your Task:
+%s
+`, task)
+
+	return base + "\n" + subagentInstructions
+}
+
+// ─── Tool Registration ───
+
+// RegisterSubagentTools registers the spawn_subagent, list_subagents,
+// wait_subagent, and stop_subagent tools in the tool executor. These allow
+// the main agent to create and manage child agents.
+func RegisterSubagentTools(
+	executor *ToolExecutor,
+	manager *SubagentManager,
+	llmClient *LLMClient,
+	promptComposer *PromptComposer,
+	logger *slog.Logger,
+) {
+	if manager == nil || !manager.cfg.Enabled {
+		return
+	}
+
+	// ── spawn_subagent ──
+	executor.Register(
+		MakeToolDefinition("spawn_subagent",
+			"Spawn a subagent to handle a task concurrently. The subagent runs "+
+				"independently with its own context and tools. Use this for parallelizable "+
+				"tasks like: researching multiple topics, running commands while writing code, "+
+				"or handling independent subtasks. Returns immediately with a run_id.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"task": map[string]any{
+						"type":        "string",
+						"description": "The task description for the subagent. Be specific and provide all context needed.",
+					},
+					"label": map[string]any{
+						"type":        "string",
+						"description": "A short label to identify this subagent (e.g. 'research-api', 'write-tests').",
+					},
+					"model": map[string]any{
+						"type":        "string",
+						"description": "Override the LLM model for this subagent. Empty = use default.",
+					},
+					"timeout_seconds": map[string]any{
+						"type":        "integer",
+						"description": "Max execution time in seconds. Default: 300 (5 minutes).",
+					},
+				},
+				"required": []string{"task"},
+			},
+		),
+		func(ctx context.Context, args map[string]any) (any, error) {
+			task, _ := args["task"].(string)
+			if task == "" {
+				return nil, fmt.Errorf("task is required")
+			}
+
+			label, _ := args["label"].(string)
+			model, _ := args["model"].(string)
+			timeoutSec := 0
+			if v, ok := args["timeout_seconds"].(float64); ok {
+				timeoutSec = int(v)
+			}
+
+			run, err := manager.Spawn(
+				context.Background(),
+				SpawnParams{
+					Task:           task,
+					Label:          label,
+					Model:          model,
+					TimeoutSeconds: timeoutSec,
+				},
+				llmClient,
+				executor,
+				promptComposer,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return fmt.Sprintf(
+				"Subagent spawned successfully.\n"+
+					"  run_id: %s\n"+
+					"  label: %s\n"+
+					"  status: running\n\n"+
+					"Use wait_subagent to get the result, or list_subagents to check status.",
+				run.ID, run.Label,
+			), nil
+		},
+	)
+
+	// ── list_subagents ──
+	executor.Register(
+		MakeToolDefinition("list_subagents",
+			"List all subagent runs and their current status. Use to check progress of spawned subagents.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"status_filter": map[string]any{
+						"type":        "string",
+						"description": "Filter by status: 'running', 'completed', 'failed', 'all'. Default: 'all'.",
+						"enum":        []string{"running", "completed", "failed", "all"},
+					},
+				},
+			},
+		),
+		func(ctx context.Context, args map[string]any) (any, error) {
+			filter, _ := args["status_filter"].(string)
+			if filter == "" {
+				filter = "all"
+			}
+
+			runs := manager.List()
+			if len(runs) == 0 {
+				return "No subagent runs found.", nil
+			}
+
+			var result string
+			count := 0
+			for _, run := range runs {
+				if filter != "all" && string(run.Status) != filter {
+					continue
+				}
+
+				duration := run.Duration
+				if run.Status == SubagentStatusRunning {
+					duration = time.Since(run.StartedAt)
+				}
+
+				result += fmt.Sprintf(
+					"- [%s] %s (id: %s) — %s — %s",
+					run.Status, run.Label, run.ID, truncate(run.Task, 60), duration.Round(time.Second),
+				)
+
+				if run.Status == SubagentStatusCompleted {
+					result += fmt.Sprintf(" — result: %s", truncate(run.Result, 100))
+				}
+				if run.Status == SubagentStatusFailed {
+					result += fmt.Sprintf(" — error: %s", run.Error)
+				}
+				result += "\n"
+				count++
+			}
+
+			if count == 0 {
+				return fmt.Sprintf("No subagent runs with status '%s'.", filter), nil
+			}
+
+			return fmt.Sprintf("Subagent runs (%d):\n%s\nActive: %d / Max: %d",
+				count, result, manager.ActiveCount(), manager.cfg.MaxConcurrent), nil
+		},
+	)
+
+	// ── wait_subagent ──
+	executor.Register(
+		MakeToolDefinition("wait_subagent",
+			"Wait for a subagent to complete and return its result. "+
+				"Blocks until the subagent finishes or the timeout is reached.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id": map[string]any{
+						"type":        "string",
+						"description": "The run_id of the subagent to wait for.",
+					},
+					"timeout_seconds": map[string]any{
+						"type":        "integer",
+						"description": "Max time to wait in seconds. Default: 120.",
+					},
+				},
+				"required": []string{"run_id"},
+			},
+		),
+		func(_ context.Context, args map[string]any) (any, error) {
+			runID, _ := args["run_id"].(string)
+			if runID == "" {
+				return nil, fmt.Errorf("run_id is required")
+			}
+
+			timeoutSec := 120
+			if v, ok := args["timeout_seconds"].(float64); ok && v > 0 {
+				timeoutSec = int(v)
+			}
+
+			waitCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+			defer cancel()
+
+			run, err := manager.Wait(waitCtx, runID)
+			if err != nil {
+				if run != nil {
+					return fmt.Sprintf(
+						"Wait interrupted: %v\n\nPartial state:\n  status: %s\n  label: %s\n  running_for: %s",
+						err, run.Status, run.Label, time.Since(run.StartedAt).Round(time.Second),
+					), nil
+				}
+				return nil, err
+			}
+
+			switch run.Status {
+			case SubagentStatusCompleted:
+				return fmt.Sprintf(
+					"Subagent '%s' completed successfully in %s.\n\n### Result:\n%s",
+					run.Label, run.Duration.Round(time.Second), run.Result,
+				), nil
+
+			case SubagentStatusFailed:
+				result := fmt.Sprintf(
+					"Subagent '%s' failed after %s.\n\nError: %s",
+					run.Label, run.Duration.Round(time.Second), run.Error,
+				)
+				if run.Result != "" {
+					result += fmt.Sprintf("\n\nPartial result:\n%s", run.Result)
+				}
+				return result, nil
+
+			case SubagentStatusTimeout:
+				return fmt.Sprintf(
+					"Subagent '%s' timed out after %s.\n\nPartial result:\n%s",
+					run.Label, run.Duration.Round(time.Second), run.Result,
+				), nil
+
+			default:
+				return fmt.Sprintf("Subagent '%s' is still %s.", run.Label, run.Status), nil
+			}
+		},
+	)
+
+	// ── stop_subagent ──
+	executor.Register(
+		MakeToolDefinition("stop_subagent",
+			"Stop a running subagent by cancelling its execution.",
+			map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id": map[string]any{
+						"type":        "string",
+						"description": "The run_id of the subagent to stop.",
+					},
+				},
+				"required": []string{"run_id"},
+			},
+		),
+		func(_ context.Context, args map[string]any) (any, error) {
+			runID, _ := args["run_id"].(string)
+			if runID == "" {
+				return nil, fmt.Errorf("run_id is required")
+			}
+
+			if err := manager.Stop(runID); err != nil {
+				return nil, err
+			}
+
+			return fmt.Sprintf("Subagent %s stop requested.", runID), nil
+		},
+	)
+
+	logger.Info("subagent tools registered",
+		"tools", []string{"spawn_subagent", "list_subagents", "wait_subagent", "stop_subagent"},
+		"max_concurrent", manager.cfg.MaxConcurrent,
+	)
+}

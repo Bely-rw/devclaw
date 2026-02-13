@@ -5,16 +5,23 @@
 package copilot
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// StreamCallback is called for each token/chunk during streaming.
+type StreamCallback func(chunk string)
 
 // ---------- Client ----------
 
@@ -23,6 +30,7 @@ type LLMClient struct {
 	baseURL    string
 	apiKey     string
 	model      string
+	fallback   FallbackConfig
 	httpClient *http.Client
 	logger     *slog.Logger
 }
@@ -39,6 +47,7 @@ func NewLLMClient(cfg *Config, logger *slog.Logger) *LLMClient {
 		baseURL: baseURL,
 		apiKey:  cfg.API.APIKey,
 		model:   cfg.Model,
+		fallback: cfg.Fallback.Effective(),
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
@@ -48,11 +57,26 @@ func NewLLMClient(cfg *Config, logger *slog.Logger) *LLMClient {
 
 // ---------- Wire Types (OpenAI-compatible) ----------
 
+// contentPart represents a single part of multimodal message content.
+// Used for vision: array of {"type":"text","text":"..."} and {"type":"image_url","image_url":{"url":"data:..."}}.
+type contentPart struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *imageURL `json:"image_url,omitempty"`
+}
+
+// imageURL holds the URL (including data:...) and optional detail for vision.
+type imageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"` // "auto", "low", "high"
+}
+
 // chatMessage represents a message in the OpenAI chat format.
 // Supports user, system, assistant (with optional tool_calls), and tool result messages.
+// Content is either a string (text-only) or []contentPart (multimodal, e.g. image+text).
 type chatMessage struct {
 	Role       string     `json:"role"`
-	Content    string     `json:"content"`
+	Content    any        `json:"content"` // string or []contentPart
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
@@ -62,6 +86,38 @@ type chatRequest struct {
 	Model    string           `json:"model"`
 	Messages []chatMessage    `json:"messages"`
 	Tools    []ToolDefinition `json:"tools,omitempty"`
+	Stream   bool             `json:"stream,omitempty"`
+}
+
+// streamChoice represents a single choice in a streaming chunk.
+type streamChoice struct {
+	Index        int `json:"index"`
+	Delta        struct {
+		Content   string           `json:"content"`
+		ToolCalls []streamToolCall `json:"tool_calls,omitempty"`
+	} `json:"delta"`
+	FinishReason *string `json:"finish_reason"`
+}
+
+// streamToolCall represents a tool call delta (partial; id, name, arguments come in chunks).
+type streamToolCall struct {
+	Index    int  `json:"index"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function,omitempty"`
+}
+
+// streamResponse is the SSE chunk format.
+type streamResponse struct {
+	Choices []streamChoice `json:"choices"`
+	Usage   *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
 }
 
 // chatResponse is the OpenAI-compatible chat completions response.
@@ -120,6 +176,7 @@ type LLMResponse struct {
 	ToolCalls    []ToolCall
 	FinishReason string
 	Usage        LLMUsage
+	ModelUsed    string // The model that actually produced the response
 }
 
 // LLMUsage holds token usage information from the API response.
@@ -127,6 +184,48 @@ type LLMUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+}
+
+// ---------- Error Classification ----------
+
+// LLMErrorKind classifies API errors for retry/fallback decisions.
+type LLMErrorKind int
+
+const (
+	LLMErrorRetryable  LLMErrorKind = iota // 429, 500, 502, 503, 529
+	LLMErrorAuth                           // 401, 403
+	LLMErrorContext                        // context_length_exceeded
+	LLMErrorBadRequest                     // 400
+	LLMErrorFatal                          // everything else
+)
+
+// apiError captures HTTP status, body, and optional Retry-After for 429.
+type apiError struct {
+	statusCode   int
+	body         string
+	retryAfterSec int // from Retry-After header, 0 if not set
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("API returned %d: %s", e.statusCode, truncate(e.body, 200))
+}
+
+// classifyAPIError determines the error kind from status code and response body.
+func classifyAPIError(statusCode int, body string) LLMErrorKind {
+	bodyLower := strings.ToLower(body)
+	if strings.Contains(bodyLower, "context_length_exceeded") {
+		return LLMErrorContext
+	}
+	switch statusCode {
+	case 400:
+		return LLMErrorBadRequest
+	case 401, 403:
+		return LLMErrorAuth
+	case 429, 500, 502, 503, 529:
+		return LLMErrorRetryable
+	default:
+		return LLMErrorFatal
+	}
 }
 
 // ---------- Public Methods ----------
@@ -169,16 +268,142 @@ func (c *LLMClient) Complete(ctx context.Context, systemPrompt string, history [
 	return resp.Content, nil
 }
 
-// CompleteWithTools sends a chat completion request with optional tool definitions.
-// Returns a structured response that may include tool calls the LLM wants to execute.
-// If tools is nil/empty, behaves as a regular chat completion.
-func (c *LLMClient) CompleteWithTools(ctx context.Context, messages []chatMessage, tools []ToolDefinition) (*LLMResponse, error) {
-	if c.apiKey == "" {
-		return nil, fmt.Errorf("API key not configured. Run 'copilot config set-key' or set GOCLAW_API_KEY")
+// CompleteWithVision sends an image plus optional text to the LLM vision API
+// and returns the model's description or response.
+// imageBase64 is the raw base64-encoded image bytes (without data URL prefix).
+// mimeType is e.g. "image/jpeg", "image/png".
+// detail is "auto", "low", or "high" (empty defaults to "auto").
+func (c *LLMClient) CompleteWithVision(ctx context.Context, systemPrompt, imageBase64, mimeType, userPrompt, detail string) (string, error) {
+	dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, imageBase64)
+	if detail == "" {
+		detail = "auto"
 	}
 
+	parts := []contentPart{
+		{
+			Type: "image_url",
+			ImageURL: &imageURL{
+				URL:    dataURL,
+				Detail: detail,
+			},
+		},
+	}
+	if userPrompt != "" {
+		parts = append([]contentPart{{Type: "text", Text: userPrompt}}, parts...)
+	}
+
+	messages := make([]chatMessage, 0, 2)
+	if systemPrompt != "" {
+		messages = append(messages, chatMessage{
+			Role:    "system",
+			Content: systemPrompt,
+		})
+	}
+	messages = append(messages, chatMessage{
+		Role:    "user",
+		Content: parts,
+	})
+
+	resp, err := c.completeOnce(ctx, c.model, messages, nil)
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
+// TranscribeAudio sends audio data to the Whisper API and returns the transcript.
+// filename is used as the form field name (e.g. "audio.ogg", "voice.mp3").
+// model defaults to "whisper-1" if empty.
+func (c *LLMClient) TranscribeAudio(ctx context.Context, audioData []byte, filename, model string) (string, error) {
+	if filename == "" {
+		filename = "audio.webm"
+	}
+	if model == "" {
+		model = "whisper-1"
+	}
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	// Add file part.
+	part, err := w.CreateFormFile("file", filename)
+	if err != nil {
+		return "", fmt.Errorf("creating form file: %w", err)
+	}
+	if _, err := part.Write(audioData); err != nil {
+		return "", fmt.Errorf("writing audio data: %w", err)
+	}
+
+	// Add model part.
+	if err := w.WriteField("model", model); err != nil {
+		return "", fmt.Errorf("writing model field: %w", err)
+	}
+
+	if err := w.Close(); err != nil {
+		return "", fmt.Errorf("closing multipart writer: %w", err)
+	}
+
+	endpoint := c.baseURL + "/audio/transcriptions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &buf)
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	c.logger.Debug("sending audio transcription request",
+		"filename", filename,
+		"size_bytes", len(audioData),
+		"endpoint", endpoint,
+	)
+
+	start := time.Now()
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("transcription request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading response: %w", err)
+	}
+
+	bodyStr := string(respBody)
+
+	if resp.StatusCode != http.StatusOK {
+		c.logger.Error("transcription API error",
+			"status", resp.StatusCode,
+			"body", truncate(bodyStr, 500),
+		)
+		return "", fmt.Errorf("transcription API returned %d: %s", resp.StatusCode, truncate(bodyStr, 200))
+	}
+
+	// Response is either plain text (transcript) or JSON with "text" field.
+	text := bodyStr
+	if strings.HasPrefix(strings.TrimSpace(bodyStr), "{") {
+		var j struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(respBody, &j); err == nil && j.Text != "" {
+			text = j.Text
+		}
+	}
+
+	c.logger.Info("audio transcription done",
+		"duration_ms", time.Since(start).Milliseconds(),
+		"transcript_len", len(text),
+	)
+
+	return strings.TrimSpace(text), nil
+}
+
+// completeOnce performs a single chat completion request. Returns *apiError on HTTP errors
+// so the caller can classify and decide retry/fallback.
+func (c *LLMClient) completeOnce(ctx context.Context, model string, messages []chatMessage, tools []ToolDefinition) (*LLMResponse, error) {
 	reqBody := chatRequest{
-		Model:    c.model,
+		Model:    model,
 		Messages: messages,
 	}
 	if len(tools) > 0 {
@@ -200,7 +425,7 @@ func (c *LLMClient) CompleteWithTools(ctx context.Context, messages []chatMessag
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	c.logger.Debug("sending chat completion",
-		"model", c.model,
+		"model", model,
 		"messages", len(messages),
 		"tools", len(tools),
 		"endpoint", endpoint,
@@ -219,13 +444,23 @@ func (c *LLMClient) CompleteWithTools(ctx context.Context, messages []chatMessag
 	}
 
 	duration := time.Since(start)
+	bodyStr := string(respBody)
 
 	if resp.StatusCode != http.StatusOK {
+		apierr := &apiError{statusCode: resp.StatusCode, body: bodyStr}
+		if resp.StatusCode == 429 {
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if sec, err := strconv.Atoi(ra); err == nil && sec > 0 {
+					apierr.retryAfterSec = sec
+				}
+			}
+		}
 		c.logger.Error("API error",
+			"model", model,
 			"status", resp.StatusCode,
-			"body", truncate(string(respBody), 500),
+			"body", truncate(bodyStr, 500),
 		)
-		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+		return nil, apierr
 	}
 
 	var chatResp chatResponse
@@ -234,6 +469,11 @@ func (c *LLMClient) CompleteWithTools(ctx context.Context, messages []chatMessag
 	}
 
 	if chatResp.Error != nil {
+		// Error in JSON body - check for context_length_exceeded
+		kind := classifyAPIError(resp.StatusCode, chatResp.Error.Message)
+		if kind == LLMErrorContext {
+			return nil, &apiError{statusCode: 400, body: chatResp.Error.Message}
+		}
 		return nil, fmt.Errorf("API error: %s", chatResp.Error.Message)
 	}
 
@@ -245,7 +485,7 @@ func (c *LLMClient) CompleteWithTools(ctx context.Context, messages []chatMessag
 	content := strings.TrimSpace(choice.Message.Content)
 
 	c.logger.Info("chat completion done",
-		"model", c.model,
+		"model", model,
 		"duration_ms", duration.Milliseconds(),
 		"prompt_tokens", chatResp.Usage.PromptTokens,
 		"completion_tokens", chatResp.Usage.CompletionTokens,
@@ -257,10 +497,319 @@ func (c *LLMClient) CompleteWithTools(ctx context.Context, messages []chatMessag
 		Content:      content,
 		ToolCalls:    choice.Message.ToolCalls,
 		FinishReason: choice.FinishReason,
+		ModelUsed:    model,
 		Usage: LLMUsage{
 			PromptTokens:     chatResp.Usage.PromptTokens,
 			CompletionTokens: chatResp.Usage.CompletionTokens,
 			TotalTokens:      chatResp.Usage.TotalTokens,
 		},
 	}, nil
+}
+
+// isRetryable returns true if the error is retryable per fallback config.
+func (c *LLMClient) isRetryable(statusCode int) bool {
+	for _, code := range c.fallback.RetryOnStatusCodes {
+		if statusCode == code {
+			return true
+		}
+	}
+	return false
+}
+
+// CompleteWithTools sends a chat completion request with optional tool definitions.
+// Delegates to CompleteWithFallback for retry and model fallback.
+// Returns a structured response that may include tool calls the LLM wants to execute.
+func (c *LLMClient) CompleteWithTools(ctx context.Context, messages []chatMessage, tools []ToolDefinition) (*LLMResponse, error) {
+	return c.CompleteWithToolsUsingModel(ctx, "", messages, tools)
+}
+
+// CompleteWithToolsUsingModel is like CompleteWithTools but uses modelOverride as the
+// primary model when non-empty. Empty string means use the default config model.
+func (c *LLMClient) CompleteWithToolsUsingModel(ctx context.Context, modelOverride string, messages []chatMessage, tools []ToolDefinition) (*LLMResponse, error) {
+	return c.CompleteWithFallbackUsingModel(ctx, modelOverride, messages, tools)
+}
+
+// CompleteWithToolsStream sends a streaming chat completion request. For each text delta,
+// onChunk is called. Tool calls are accumulated silently. Falls back to non-streaming
+// if the provider does not support streaming or returns an error.
+func (c *LLMClient) CompleteWithToolsStream(ctx context.Context, messages []chatMessage, tools []ToolDefinition, onChunk StreamCallback) (*LLMResponse, error) {
+	return c.CompleteWithToolsStreamUsingModel(ctx, "", messages, tools, onChunk)
+}
+
+// CompleteWithToolsStreamUsingModel is like CompleteWithToolsStream but uses modelOverride
+// when non-empty. Empty = use c.model.
+func (c *LLMClient) CompleteWithToolsStreamUsingModel(ctx context.Context, modelOverride string, messages []chatMessage, tools []ToolDefinition, onChunk StreamCallback) (*LLMResponse, error) {
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("API key not configured. Run 'copilot config set-key' or set GOCLAW_API_KEY")
+	}
+
+	model := c.model
+	if modelOverride != "" {
+		model = modelOverride
+	}
+
+	resp, err := c.completeOnceStream(ctx, model, messages, tools, onChunk)
+	if err == nil {
+		return resp, nil
+	}
+
+	// Fallback to non-streaming (e.g. provider doesn't support stream)
+	c.logger.Debug("streaming failed, falling back to non-streaming", "error", err)
+	return c.CompleteWithToolsUsingModel(ctx, modelOverride, messages, tools)
+}
+
+// completeOnceStream performs a single streaming chat completion. Uses SSE parsing.
+func (c *LLMClient) completeOnceStream(ctx context.Context, model string, messages []chatMessage, tools []ToolDefinition, onChunk StreamCallback) (*LLMResponse, error) {
+	reqBody := chatRequest{
+		Model:    model,
+		Messages: messages,
+		Stream:   true,
+	}
+	if len(tools) > 0 {
+		reqBody.Tools = tools
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	endpoint := c.baseURL + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Accept", "text/event-stream")
+
+	c.logger.Debug("sending streaming chat completion",
+		"model", model,
+		"messages", len(messages),
+		"tools", len(tools),
+	)
+
+	start := time.Now()
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		bodyStr := string(body)
+		return nil, &apiError{statusCode: resp.StatusCode, body: bodyStr}
+	}
+
+	// Accumulated response
+	var contentBuilder strings.Builder
+	toolCallsAccum := make(map[int]*ToolCall) // index -> accumulated tool call
+	finishReason := ""
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // 64KB initial, 1MB max line
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			break
+		}
+
+		var chunk streamResponse
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			c.logger.Debug("failed to parse SSE chunk, skipping", "payload", truncate(payload, 100), "error", err)
+			continue
+		}
+
+		for _, choice := range chunk.Choices {
+			// Text delta
+			if choice.Delta.Content != "" {
+				contentBuilder.WriteString(choice.Delta.Content)
+				if onChunk != nil {
+					onChunk(choice.Delta.Content)
+				}
+			}
+
+			// Tool call deltas
+			for _, tc := range choice.Delta.ToolCalls {
+				idx := tc.Index
+				acc, ok := toolCallsAccum[idx]
+				if !ok {
+					acc = &ToolCall{Type: "function"}
+					toolCallsAccum[idx] = acc
+				}
+				if tc.ID != "" {
+					acc.ID = tc.ID
+				}
+				if tc.Function.Name != "" {
+					acc.Function.Name = tc.Function.Name
+				}
+				if tc.Function.Arguments != "" {
+					acc.Function.Arguments += tc.Function.Arguments
+				}
+			}
+
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				finishReason = *choice.FinishReason
+			}
+		}
+
+		// Usage in final chunk
+		if chunk.Usage != nil {
+			// Could capture usage if needed
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading stream: %w", err)
+	}
+
+	content := strings.TrimSpace(contentBuilder.String())
+
+	// Build ordered tool calls from accumulated map (by index)
+	indices := make([]int, 0, len(toolCallsAccum))
+	for k := range toolCallsAccum {
+		indices = append(indices, k)
+	}
+	sort.Ints(indices)
+	toolCalls := make([]ToolCall, 0, len(indices))
+	for _, i := range indices {
+		if acc, ok := toolCallsAccum[i]; ok && (acc.ID != "" || acc.Function.Name != "") {
+			toolCalls = append(toolCalls, *acc)
+		}
+	}
+
+	duration := time.Since(start)
+	c.logger.Info("streaming chat completion done",
+		"model", model,
+		"duration_ms", duration.Milliseconds(),
+		"finish_reason", finishReason,
+		"tool_calls", len(toolCalls),
+	)
+
+	return &LLMResponse{
+		Content:      content,
+		ToolCalls:    toolCalls,
+		FinishReason: finishReason,
+		ModelUsed:    model,
+		Usage:        LLMUsage{},
+	}, nil
+}
+
+// CompleteWithFallback tries the primary model, then fallback models, with retry and
+// exponential backoff on retryable errors. Returns the first successful response.
+func (c *LLMClient) CompleteWithFallback(ctx context.Context, messages []chatMessage, tools []ToolDefinition) (*LLMResponse, error) {
+	return c.CompleteWithFallbackUsingModel(ctx, "", messages, tools)
+}
+
+// CompleteWithFallbackUsingModel is like CompleteWithFallback but uses modelOverride
+// as the primary model when non-empty. Empty = use c.model.
+func (c *LLMClient) CompleteWithFallbackUsingModel(ctx context.Context, modelOverride string, messages []chatMessage, tools []ToolDefinition) (*LLMResponse, error) {
+	if c.apiKey == "" {
+		return nil, fmt.Errorf("API key not configured. Run 'copilot config set-key' or set GOCLAW_API_KEY")
+	}
+
+	primary := c.model
+	if modelOverride != "" {
+		primary = modelOverride
+	}
+
+	models := make([]string, 0, 1+len(c.fallback.Models))
+	models = append(models, primary)
+	models = append(models, c.fallback.Models...)
+
+	initialBackoff := time.Duration(c.fallback.InitialBackoffMs) * time.Millisecond
+	maxBackoff := time.Duration(c.fallback.MaxBackoffMs) * time.Millisecond
+
+	var lastErr error
+	for _, model := range models {
+		for attempt := 0; attempt <= c.fallback.MaxRetries; attempt++ {
+			resp, err := c.completeOnce(ctx, model, messages, tools)
+			if err == nil {
+				return resp, nil
+			}
+
+			lastErr = err
+
+			// Extract status code and body for classification
+			statusCode := 0
+			body := ""
+			if apierr, ok := err.(*apiError); ok {
+				statusCode = apierr.statusCode
+				body = apierr.body
+			}
+			kind := classifyAPIError(statusCode, body)
+
+			// Non-retryable: fail immediately (auth, context, bad request, or not in RetryOnStatusCodes)
+			if kind != LLMErrorRetryable || !c.isRetryable(statusCode) {
+				c.logger.Warn("non-retryable LLM error, failing immediately",
+					"model", model,
+					"attempt", attempt+1,
+					"kind", kind,
+					"error", err,
+				)
+				return nil, err
+			}
+
+			// Retryable but no more attempts for this model
+			if attempt >= c.fallback.MaxRetries {
+				c.logger.Warn("exhausted retries for model, trying next fallback",
+					"model", model,
+					"attempts", attempt+1,
+					"error", err,
+				)
+				break
+			}
+
+			// Compute backoff: min(initial * 2^attempt, maxBackoff)
+			backoff := initialBackoff
+			for i := 0; i < attempt; i++ {
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+					break
+				}
+			}
+
+			// Respect Retry-After header for 429
+			retryAfter := backoff
+			if apierr, ok := err.(*apiError); ok && apierr.statusCode == 429 && apierr.retryAfterSec > 0 {
+				serverDelay := time.Duration(apierr.retryAfterSec) * time.Second
+				if serverDelay > maxBackoff {
+					serverDelay = maxBackoff
+				}
+				if serverDelay > retryAfter {
+					retryAfter = serverDelay
+				}
+			}
+
+			c.logger.Info("retrying after retryable error",
+				"model", model,
+				"attempt", attempt+1,
+				"next_attempt", attempt+2,
+				"backoff_ms", retryAfter.Milliseconds(),
+				"error", err,
+			)
+
+			// Wait with context cancellation
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled during backoff: %w", ctx.Err())
+			case <-time.After(retryAfter):
+				// proceed to next attempt
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("all models and retries exhausted: %w", lastErr)
 }

@@ -43,11 +43,18 @@ type Session struct {
 	// maxHistory é o limite máximo de entradas no histórico.
 	maxHistory int
 
+	// Token tracking (thread-safe via mu).
+	totalPromptTokens     int
+	totalCompletionTokens int
+	totalRequests         int
+
 	// CreatedAt é o timestamp de criação da sessão.
 	CreatedAt time.Time
 
 	// lastActiveAt é o timestamp da última atividade.
 	lastActiveAt time.Time
+
+	persistence *SessionPersistence
 
 	mu sync.RWMutex
 }
@@ -68,6 +75,9 @@ type SessionConfig struct {
 
 	// BusinessContext é o contexto de negócio/usuário para esta sessão.
 	BusinessContext string `yaml:"business_context"`
+
+	// ThinkingLevel controls extended thinking: "", "off", "low", "medium", "high".
+	ThinkingLevel string `yaml:"thinking_level"`
 }
 
 // ConversationEntry representa uma troca de mensagem na sessão.
@@ -79,15 +89,16 @@ type ConversationEntry struct {
 
 // AddMessage adiciona uma nova entrada de conversa à sessão.
 // Aplica o limite de maxHistory, removendo mensagens antigas quando excedido.
+// Persiste a entrada em disco se persistence estiver configurada.
 func (s *Session) AddMessage(userMsg, assistantResp string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.history = append(s.history, ConversationEntry{
+	entry := ConversationEntry{
 		UserMessage:       userMsg,
 		AssistantResponse: assistantResp,
 		Timestamp:         time.Now(),
-	})
+	}
+
+	s.mu.Lock()
+	s.history = append(s.history, entry)
 
 	// Trim histórico se exceder o limite para evitar leak de memória.
 	if s.maxHistory > 0 && len(s.history) > s.maxHistory {
@@ -95,6 +106,14 @@ func (s *Session) AddMessage(userMsg, assistantResp string) {
 	}
 
 	s.lastActiveAt = time.Now()
+	persistence := s.persistence
+	s.mu.Unlock()
+
+	if persistence != nil {
+		if err := persistence.SaveEntry(s.ID, entry); err != nil {
+			// Log is done inside SaveEntry; avoid holding lock during I/O
+		}
+	}
 }
 
 // RecentHistory retorna as últimas N entradas de conversa (cópia thread-safe).
@@ -115,10 +134,20 @@ func (s *Session) RecentHistory(maxEntries int) []ConversationEntry {
 }
 
 // AddFact adiciona um fato de longo prazo à sessão.
+// Persiste os fatos em disco se persistence estiver configurada.
 func (s *Session) AddFact(fact string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.facts = append(s.facts, fact)
+	facts := make([]string, len(s.facts))
+	copy(facts, s.facts)
+	persistence := s.persistence
+	s.mu.Unlock()
+
+	if persistence != nil {
+		if err := persistence.SaveFacts(s.ID, facts); err != nil {
+			// Log is done inside SaveFacts
+		}
+	}
 }
 
 // GetFacts retorna uma cópia thread-safe dos fatos da sessão.
@@ -175,11 +204,57 @@ func (s *Session) ClearHistory() {
 	s.history = nil
 }
 
+// ClearFacts removes all session facts. Used by /reset.
+func (s *Session) ClearFacts() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.facts = nil
+}
+
 // HistoryLen returns the number of entries in the session history.
 func (s *Session) HistoryLen() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.history)
+}
+
+// AddTokenUsage records token usage from an LLM response. Thread-safe.
+func (s *Session) AddTokenUsage(promptTokens, completionTokens int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.totalPromptTokens += promptTokens
+	s.totalCompletionTokens += completionTokens
+	s.totalRequests++
+}
+
+// GetTokenUsage returns a copy of the token usage. Thread-safe.
+func (s *Session) GetTokenUsage() (promptTokens, completionTokens, requests int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.totalPromptTokens, s.totalCompletionTokens, s.totalRequests
+}
+
+// ResetTokenUsage clears token counters. Thread-safe.
+func (s *Session) ResetTokenUsage() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.totalPromptTokens = 0
+	s.totalCompletionTokens = 0
+	s.totalRequests = 0
+}
+
+// GetThinkingLevel returns the session thinking level. Thread-safe.
+func (s *Session) GetThinkingLevel() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.config.ThinkingLevel
+}
+
+// SetThinkingLevel sets the session thinking level. Thread-safe.
+func (s *Session) SetThinkingLevel(level string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.config.ThinkingLevel = level
 }
 
 // CompactHistory replaces the full history with a summary entry,
@@ -214,10 +289,11 @@ func (s *Session) CompactHistory(summary string, keepRecent int) []ConversationE
 // SessionStore gerencia sessões ativas, criando e recuperando por canal e chatID.
 // Implementa pruning automático de sessões inativas.
 type SessionStore struct {
-	sessions   map[string]*Session
-	sessionTTL time.Duration
-	logger     *slog.Logger
-	mu         sync.RWMutex
+	sessions    map[string]*Session
+	sessionTTL  time.Duration
+	logger      *slog.Logger
+	mu          sync.RWMutex
+	persistence *SessionPersistence
 }
 
 // NewSessionStore cria um novo store de sessões.
@@ -233,7 +309,15 @@ func NewSessionStore(logger *slog.Logger) *SessionStore {
 	}
 }
 
+// SetPersistence configures disk persistence for sessions.
+func (ss *SessionStore) SetPersistence(p *SessionPersistence) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.persistence = p
+}
+
 // GetOrCreate retorna a sessão existente ou cria uma nova para o canal e chatID.
+// Se persistence estiver configurada, tenta carregar do disco antes de criar.
 func (ss *SessionStore) GetOrCreate(channel, chatID string) *Session {
 	key := sessionKey(channel, chatID)
 
@@ -242,6 +326,7 @@ func (ss *SessionStore) GetOrCreate(channel, chatID string) *Session {
 		ss.mu.RUnlock()
 		return session
 	}
+	persistence := ss.persistence
 	ss.mu.RUnlock()
 
 	ss.mu.Lock()
@@ -252,7 +337,34 @@ func (ss *SessionStore) GetOrCreate(channel, chatID string) *Session {
 		return session
 	}
 
-	session := &Session{
+	var session *Session
+
+	if persistence != nil {
+		entries, facts, loadErr := persistence.LoadSession(key)
+		if loadErr == nil && (len(entries) > 0 || len(facts) > 0) {
+			session = &Session{
+				ID:           key,
+				Channel:      channel,
+				ChatID:       chatID,
+				config:       SessionConfig{},
+				activeSkills: []string{},
+				facts:        facts,
+				history:      entries,
+				maxHistory:   DefaultMaxHistory,
+				CreatedAt:    time.Now(),
+				lastActiveAt: time.Now(),
+			}
+			ss.sessions[key] = session
+			ss.logger.Info("sessão restaurada do disco",
+				"channel", channel,
+				"chat_id", chatID,
+			)
+			return session
+		}
+	}
+
+	// Create new session
+	session = &Session{
 		ID:           key,
 		Channel:      channel,
 		ChatID:       chatID,
@@ -263,6 +375,13 @@ func (ss *SessionStore) GetOrCreate(channel, chatID string) *Session {
 		maxHistory:   DefaultMaxHistory,
 		CreatedAt:    time.Now(),
 		lastActiveAt: time.Now(),
+		persistence:  persistence,
+	}
+
+	if persistence != nil {
+		if err := persistence.SaveMeta(key, channel, chatID, SessionConfig{}, nil); err != nil {
+			ss.logger.Warn("failed to persist session meta", "channel", channel, "chat_id", chatID, "err", err)
+		}
 	}
 
 	ss.sessions[key] = session
@@ -330,6 +449,45 @@ func (ss *SessionStore) StartPruner(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// SessionMeta holds read-only metadata for a session (for listing).
+type SessionMeta struct {
+	ID          string
+	Channel     string
+	ChatID      string
+	CreatedAt   time.Time
+	LastActiveAt time.Time
+}
+
+// ListSessions returns metadata for all sessions in the store.
+func (ss *SessionStore) ListSessions() []SessionMeta {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	out := make([]SessionMeta, 0, len(ss.sessions))
+	for _, s := range ss.sessions {
+		out = append(out, SessionMeta{
+			ID:           s.ID,
+			Channel:      s.Channel,
+			ChatID:       s.ChatID,
+			CreatedAt:    s.CreatedAt,
+			LastActiveAt: s.lastActiveAt,
+		})
+	}
+	return out
+}
+
+// Delete removes a session by channel and chatID.
+func (ss *SessionStore) Delete(channel, chatID string) bool {
+	key := sessionKey(channel, chatID)
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if _, exists := ss.sessions[key]; exists {
+		delete(ss.sessions, key)
+		ss.logger.Info("session deleted", "channel", channel, "chat_id", chatID)
+		return true
+	}
+	return false
 }
 
 // sessionKey gera a chave única para uma sessão.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/jholhewres/goclaw/pkg/goclaw/channels/whatsapp"
 	"github.com/jholhewres/goclaw/pkg/goclaw/copilot"
+	"github.com/jholhewres/goclaw/pkg/goclaw/gateway"
 	"github.com/jholhewres/goclaw/pkg/goclaw/plugins"
 	"github.com/spf13/cobra"
 )
@@ -38,7 +39,7 @@ Examples:
 
 func runServe(cmd *cobra.Command, _ []string) error {
 	// ── Load config ──
-	cfg, err := resolveConfig(cmd)
+	cfg, configPath, err := resolveConfig(cmd)
 	if err != nil {
 		return err
 	}
@@ -99,6 +100,29 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to start: %w", err)
 	}
 
+	// ── Start gateway if enabled ──
+	var gw *gateway.Gateway
+	if cfg.Gateway.Enabled {
+		gw = gateway.New(assistant, cfg.Gateway, logger)
+		if err := gw.Start(ctx); err != nil {
+			logger.Error("failed to start gateway", "error", err)
+		} else {
+			logger.Info("gateway running", "address", cfg.Gateway.Address)
+		}
+	}
+
+	// ── Start config watcher for hot-reload ──
+	if configPath != "" {
+		watcher := copilot.NewConfigWatcher(
+			configPath,
+			5*time.Second,
+			assistant.ApplyConfigUpdate,
+			logger,
+		)
+		go watcher.Start(ctx)
+		logger.Info("config watcher started", "path", configPath)
+	}
+
 	// ── Wait for shutdown ──
 	logger.Info("GoClaw Copilot running. Press Ctrl+C to stop.",
 		"name", cfg.Name,
@@ -116,6 +140,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	done := make(chan struct{})
 	go func() {
 		pluginLoader.Shutdown()
+		if gw != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = gw.Stop(shutdownCtx)
+			cancel()
+		}
 		assistant.Stop()
 		close(done)
 	}()
@@ -131,26 +160,27 @@ func runServe(cmd *cobra.Command, _ []string) error {
 }
 
 // resolveConfig loads config from file, runs interactive setup if missing.
-func resolveConfig(cmd *cobra.Command) (*copilot.Config, error) {
+// Returns (config, configPath, error). configPath is empty if config came from discovery without a known path.
+func resolveConfig(cmd *cobra.Command) (*copilot.Config, string, error) {
 	configPath, _ := cmd.Root().PersistentFlags().GetString("config")
 
 	// Try explicit path first.
 	if configPath != "" {
 		cfg, err := copilot.LoadConfigFromFile(configPath)
 		if err != nil {
-			return nil, fmt.Errorf("loading config: %w", err)
+			return nil, "", fmt.Errorf("loading config: %w", err)
 		}
-		return cfg, nil
+		return cfg, configPath, nil
 	}
 
 	// Auto-discover config file.
 	if found := copilot.FindConfigFile(); found != "" {
 		cfg, err := copilot.LoadConfigFromFile(found)
 		if err != nil {
-			return nil, fmt.Errorf("loading config from %s: %w", found, err)
+			return nil, "", fmt.Errorf("loading config from %s: %w", found, err)
 		}
 		slog.Info("config loaded", "path", found)
-		return cfg, nil
+		return cfg, found, nil
 	}
 
 	// No config file — offer interactive setup before connecting.
@@ -166,25 +196,25 @@ func resolveConfig(cmd *cobra.Command) (*copilot.Config, error) {
 	if answer != "" && strings.ToLower(answer) != "y" {
 		fmt.Println()
 		fmt.Println("Run 'copilot setup' or 'copilot config init' to create the configuration.")
-		return nil, fmt.Errorf("configuration required before starting")
+		return nil, "", fmt.Errorf("configuration required before starting")
 	}
 
 	// Run the interactive setup wizard.
 	if err := runInteractiveSetup(); err != nil {
-		return nil, fmt.Errorf("setup: %w", err)
+		return nil, "", fmt.Errorf("setup: %w", err)
 	}
 
 	// Try loading the freshly created config.
 	if found := copilot.FindConfigFile(); found != "" {
 		cfg, err := copilot.LoadConfigFromFile(found)
 		if err != nil {
-			return nil, fmt.Errorf("loading config from %s: %w", found, err)
+			return nil, "", fmt.Errorf("loading config from %s: %w", found, err)
 		}
 		slog.Info("config loaded after setup", "path", found)
-		return cfg, nil
+		return cfg, found, nil
 	}
 
-	return nil, fmt.Errorf("setup completado mas config.yaml não encontrado")
+	return nil, "", fmt.Errorf("setup completado mas config.yaml não encontrado")
 }
 
 // readInput reads a line from stdin (used by resolveConfig prompt).

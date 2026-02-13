@@ -28,6 +28,8 @@ Thumbs.db
 # Data & Sessions
 /data/
 /sessions/
+/memory/
+MEMORY.md
 *.db
 *.db-shm
 *.db-wal

@@ -409,6 +409,73 @@ func (am *AccessManager) ListGroups() []*AccessEntry {
 	return entries
 }
 
+// ApplyConfig updates access config from hot-reload. Re-seeds config-derived
+// entries (owners, admins, allowed, blocked, groups). Runtime grants (AddedBy != "config")
+// are preserved.
+func (am *AccessManager) ApplyConfig(cfg AccessConfig) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	// Remove config-derived entries only.
+	for jid, e := range am.users {
+		if e.AddedBy == "config" {
+			delete(am.users, jid)
+		}
+	}
+	for gid, e := range am.groups {
+		if e.AddedBy == "config" {
+			delete(am.groups, gid)
+		}
+	}
+
+	am.cfg = cfg
+	now := time.Now()
+
+	for _, jid := range cfg.Owners {
+		am.users[normalizeJID(jid)] = &AccessEntry{
+			JID: normalizeJID(jid), Level: AccessOwner,
+			AddedBy: "config", AddedAt: now,
+		}
+	}
+	for _, jid := range cfg.Admins {
+		am.users[normalizeJID(jid)] = &AccessEntry{
+			JID: normalizeJID(jid), Level: AccessAdmin,
+			AddedBy: "config", AddedAt: now,
+		}
+	}
+	for _, jid := range cfg.AllowedUsers {
+		am.users[normalizeJID(jid)] = &AccessEntry{
+			JID: normalizeJID(jid), Level: AccessUser,
+			AddedBy: "config", AddedAt: now,
+		}
+	}
+	for _, jid := range cfg.BlockedUsers {
+		am.users[normalizeJID(jid)] = &AccessEntry{
+			JID: normalizeJID(jid), Level: AccessBlocked,
+			AddedBy: "config", AddedAt: now,
+		}
+	}
+	for _, gid := range cfg.AllowedGroups {
+		am.groups[normalizeJID(gid)] = &AccessEntry{
+			JID: normalizeJID(gid), Level: AccessUser,
+			AddedBy: "config", AddedAt: now,
+		}
+	}
+	for _, gid := range cfg.BlockedGroups {
+		am.groups[normalizeJID(gid)] = &AccessEntry{
+			JID: normalizeJID(gid), Level: AccessBlocked,
+			AddedBy: "config", AddedAt: now,
+		}
+	}
+
+	am.logger.Info("access config hot-reloaded",
+		"policy", cfg.DefaultPolicy,
+		"owners", len(cfg.Owners),
+		"admins", len(cfg.Admins),
+		"users", len(cfg.AllowedUsers),
+	)
+}
+
 // PendingMessage returns the message to send to unknown contacts.
 func (am *AccessManager) PendingMessage() string {
 	if am.cfg.PendingMessage != "" {

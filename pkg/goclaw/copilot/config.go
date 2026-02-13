@@ -4,6 +4,7 @@ package copilot
 
 import (
 	"github.com/jholhewres/goclaw/pkg/goclaw/channels/whatsapp"
+	"github.com/jholhewres/goclaw/pkg/goclaw/copilot/security"
 	"github.com/jholhewres/goclaw/pkg/goclaw/plugins"
 	"github.com/jholhewres/goclaw/pkg/goclaw/sandbox"
 )
@@ -64,8 +65,148 @@ type Config struct {
 	// Heartbeat configures the proactive heartbeat system.
 	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
 
+	// Subagents configures the subagent orchestration system.
+	Subagents SubagentConfig `yaml:"subagents"`
+
+	// Agent configures the agent loop parameters (turns, timeouts, auto-continue).
+	Agent AgentConfig `yaml:"agent"`
+
+	// Fallback configures model fallback with retry and backoff.
+	Fallback FallbackConfig `yaml:"fallback"`
+
+	// Media configures vision and audio transcription.
+	Media MediaConfig `yaml:"media"`
+
 	// Logging configures log output.
 	Logging LoggingConfig `yaml:"logging"`
+
+	// Queue configures message debouncing for bursts.
+	Queue QueueConfig `yaml:"queue"`
+
+	// Gateway configures the HTTP API gateway.
+	Gateway GatewayConfig `yaml:"gateway"`
+}
+
+// GatewayConfig configures the HTTP API gateway.
+type GatewayConfig struct {
+	// Enabled turns the gateway on/off (default: false).
+	Enabled bool `yaml:"enabled"`
+
+	// Address is the listen address (default: ":8080").
+	Address string `yaml:"address"`
+
+	// AuthToken is the Bearer token for /api/* and /v1/* auth (empty = no auth).
+	AuthToken string `yaml:"auth_token"`
+
+	// CORSOrigins lists allowed origins for CORS (empty = no CORS).
+	CORSOrigins []string `yaml:"cors_origins"`
+}
+
+// QueueConfig configures the message queue for handling bursts.
+type QueueConfig struct {
+	// DebounceMs is the debounce delay in ms before draining queued messages (default: 1000).
+	DebounceMs int `yaml:"debounce_ms"`
+
+	// MaxPending is the max queued messages per session before dropping oldest (default: 20).
+	MaxPending int `yaml:"max_pending"`
+}
+
+// MediaConfig configures vision and audio transcription capabilities.
+type MediaConfig struct {
+	// VisionEnabled enables image understanding via LLM vision (default: true).
+	VisionEnabled bool `yaml:"vision_enabled"`
+
+	// VisionDetail controls quality: "auto", "low", "high" (default: "auto").
+	VisionDetail string `yaml:"vision_detail"`
+
+	// TranscriptionEnabled enables audio transcription (default: true).
+	TranscriptionEnabled bool `yaml:"transcription_enabled"`
+
+	// TranscriptionModel is the model for audio transcription (default: "whisper-1").
+	TranscriptionModel string `yaml:"transcription_model"`
+
+	// MaxImageSize is the max image size in bytes to process (default: 20MB).
+	MaxImageSize int64 `yaml:"max_image_size"`
+
+	// MaxAudioSize is the max audio size in bytes (default: 25MB - Whisper limit).
+	MaxAudioSize int64 `yaml:"max_audio_size"`
+}
+
+// DefaultMediaConfig returns sensible defaults for media processing.
+func DefaultMediaConfig() MediaConfig {
+	return MediaConfig{
+		VisionEnabled:        true,
+		VisionDetail:         "auto",
+		TranscriptionEnabled: true,
+		TranscriptionModel:   "whisper-1",
+		MaxImageSize:         20 * 1024 * 1024, // 20MB
+		MaxAudioSize:         25 * 1024 * 1024, // 25MB (Whisper limit)
+	}
+}
+
+// Effective returns a copy with default values filled in for zero fields.
+func (m MediaConfig) Effective() MediaConfig {
+	out := m
+	if out.MaxImageSize == 0 {
+		out.MaxImageSize = 20 * 1024 * 1024
+	}
+	if out.MaxAudioSize == 0 {
+		out.MaxAudioSize = 25 * 1024 * 1024
+	}
+	if out.VisionDetail == "" {
+		out.VisionDetail = "auto"
+	}
+	if out.TranscriptionModel == "" {
+		out.TranscriptionModel = "whisper-1"
+	}
+	return out
+}
+
+// FallbackConfig configures model fallback and retry behavior.
+type FallbackConfig struct {
+	// Models is the ordered list of fallback models to try on failure.
+	Models []string `yaml:"models"`
+
+	// MaxRetries per model before moving to next (default: 2).
+	MaxRetries int `yaml:"max_retries"`
+
+	// InitialBackoffMs is the initial retry delay in ms (default: 1000).
+	InitialBackoffMs int `yaml:"initial_backoff_ms"`
+
+	// MaxBackoffMs caps the backoff (default: 30000).
+	MaxBackoffMs int `yaml:"max_backoff_ms"`
+
+	// RetryOnStatusCodes lists HTTP codes that trigger retry (default: [429, 500, 502, 503, 529]).
+	RetryOnStatusCodes []int `yaml:"retry_on_status_codes"`
+}
+
+// DefaultFallbackConfig returns sensible defaults for model fallback.
+func DefaultFallbackConfig() FallbackConfig {
+	return FallbackConfig{
+		Models:             nil,
+		MaxRetries:         2,
+		InitialBackoffMs:   1000,
+		MaxBackoffMs:       30000,
+		RetryOnStatusCodes: []int{429, 500, 502, 503, 529},
+	}
+}
+
+// Effective returns a copy with default values filled in for zero fields.
+func (f FallbackConfig) Effective() FallbackConfig {
+	out := f
+	if out.MaxRetries == 0 {
+		out.MaxRetries = 2
+	}
+	if out.InitialBackoffMs == 0 {
+		out.InitialBackoffMs = 1000
+	}
+	if out.MaxBackoffMs == 0 {
+		out.MaxBackoffMs = 30000
+	}
+	if len(out.RetryOnStatusCodes) == 0 {
+		out.RetryOnStatusCodes = []int{429, 500, 502, 503, 529}
+	}
+	return out
 }
 
 // APIConfig configures the LLM provider endpoint and credentials.
@@ -128,6 +269,25 @@ type SecurityConfig struct {
 
 	// EnableURLValidation enables URL validation in outputs.
 	EnableURLValidation bool `yaml:"enable_url_validation"`
+
+	// ToolGuard configures per-tool access control, command safety,
+	// path protection, SSH allowlist, and audit logging.
+	ToolGuard ToolGuardConfig `yaml:"tool_guard"`
+
+	// ToolExecutor configures parallel tool execution.
+	ToolExecutor ToolExecutorConfig `yaml:"tool_executor"`
+
+	// SSRF configures URL validation for web_fetch (private IPs, metadata, etc.).
+	SSRF security.SSRFConfig `yaml:"ssrf"`
+}
+
+// ToolExecutorConfig configures tool execution behavior.
+type ToolExecutorConfig struct {
+	// Parallel enables parallel execution of independent tools (default: true).
+	Parallel bool `yaml:"parallel"`
+
+	// MaxParallel is the max concurrent tool executions when parallel is enabled (default: 5).
+	MaxParallel int `yaml:"max_parallel"`
 }
 
 // TokenBudgetConfig configures per-layer token allocation.
@@ -199,6 +359,11 @@ func DefaultConfig() *Config {
 			RateLimit:           30,
 			EnablePIIDetection:  false,
 			EnableURLValidation: true,
+			ToolGuard:           DefaultToolGuardConfig(),
+			ToolExecutor: ToolExecutorConfig{
+				Parallel:    true,
+				MaxParallel: 5,
+			},
 		},
 		TokenBudget: TokenBudgetConfig{
 			Total:    128000,
@@ -220,10 +385,18 @@ func DefaultConfig() *Config {
 			Enabled: true,
 			Storage: "./data/scheduler.db",
 		},
-		Heartbeat: DefaultHeartbeatConfig(),
+		Heartbeat:  DefaultHeartbeatConfig(),
+		Subagents:  DefaultSubagentConfig(),
+		Agent:      DefaultAgentConfig(),
+		Fallback:   DefaultFallbackConfig(),
+		Media:      DefaultMediaConfig(),
 		Logging: LoggingConfig{
 			Level:  "info",
 			Format: "json",
+		},
+		Gateway: GatewayConfig{
+			Enabled: false,
+			Address: ":8080",
 		},
 	}
 }

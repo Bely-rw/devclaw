@@ -163,6 +163,55 @@ func (r *Registry) ByCategory(category string) []Metadata {
 	return results
 }
 
+// Reload reloads all skills from all loaders, refreshing the catalog.
+// New skills are added, existing ones are updated. Returns count of skills loaded.
+func (r *Registry) Reload(ctx context.Context) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	loaded := 0
+	for _, loader := range r.loaders {
+		skills, err := loader.Load(ctx)
+		if err != nil {
+			r.logger.Error("failed to reload skills",
+				"source", loader.Source(),
+				"error", err,
+			)
+			continue
+		}
+
+		for _, skill := range skills {
+			meta := skill.Metadata()
+			if _, existed := r.skills[meta.Name]; !existed {
+				r.indexSkill(meta)
+			}
+			r.skills[meta.Name] = skill
+			loaded++
+
+			r.logger.Debug("skill reloaded",
+				"name", meta.Name,
+				"source", loader.Source(),
+			)
+		}
+	}
+
+	r.logger.Info("skills reloaded", "count", loaded)
+	return loaded, nil
+}
+
+// Remove removes a skill from the registry by name.
+func (r *Registry) Remove(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.skills[name]; !exists {
+		return false
+	}
+
+	delete(r.skills, name)
+	return true
+}
+
 // ShutdownAll encerra todas as skills de forma graciosa.
 func (r *Registry) ShutdownAll() {
 	r.mu.RLock()

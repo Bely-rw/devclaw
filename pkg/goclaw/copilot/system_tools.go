@@ -5,26 +5,29 @@ package copilot
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/jholhewres/goclaw/pkg/goclaw/copilot/memory"
+	"github.com/jholhewres/goclaw/pkg/goclaw/copilot/security"
 	"github.com/jholhewres/goclaw/pkg/goclaw/sandbox"
 	"github.com/jholhewres/goclaw/pkg/goclaw/scheduler"
 )
 
 // RegisterSystemTools registers all built-in system tools in the executor.
 // These are core tools available regardless of which skills are loaded.
-func RegisterSystemTools(executor *ToolExecutor, sandboxRunner *sandbox.Runner, memStore *memory.FileStore, sched *scheduler.Scheduler, dataDir string) {
+// If ssrfGuard is non-nil, web_fetch will validate URLs against SSRF rules.
+func RegisterSystemTools(executor *ToolExecutor, sandboxRunner *sandbox.Runner, memStore *memory.FileStore, sched *scheduler.Scheduler, dataDir string, ssrfGuard *security.SSRFGuard) {
 	registerWebSearchTool(executor)
-	registerWebFetchTool(executor)
+	registerWebFetchTool(executor, ssrfGuard)
 	registerFileTools(executor, dataDir)
+	registerBashTool(executor)
 
 	if sandboxRunner != nil {
 		registerExecTool(executor, sandboxRunner)
@@ -181,7 +184,7 @@ func stripHTMLTags(s string) string {
 	return strings.TrimSpace(result.String())
 }
 
-func registerWebFetchTool(executor *ToolExecutor) {
+func registerWebFetchTool(executor *ToolExecutor, ssrfGuard *security.SSRFGuard) {
 	client := &http.Client{Timeout: 20 * time.Second}
 
 	executor.Register(
@@ -202,6 +205,12 @@ func registerWebFetchTool(executor *ToolExecutor) {
 			}
 			if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 				url = "https://" + url
+			}
+
+			if ssrfGuard != nil {
+				if err := ssrfGuard.IsAllowed(url); err != nil {
+					return nil, err
+				}
 			}
 
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -229,11 +238,11 @@ func registerWebFetchTool(executor *ToolExecutor) {
 	)
 }
 
-// ---------- Exec Tool ----------
+// ---------- Exec Tool (sandboxed) ----------
 
 func registerExecTool(executor *ToolExecutor, runner *sandbox.Runner) {
 	executor.Register(
-		MakeToolDefinition("exec", "Execute a shell command in a sandboxed environment. Use for running scripts, system commands, etc.", map[string]any{
+		MakeToolDefinition("exec", "Execute a shell command in a sandboxed environment. For full access, use the 'bash' tool instead.", map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"command": map[string]any{
@@ -270,59 +279,368 @@ func registerExecTool(executor *ToolExecutor, runner *sandbox.Runner) {
 	)
 }
 
-// ---------- File Tools ----------
+// ---------- Bash Tool (full access, user environment) ----------
 
-func registerFileTools(executor *ToolExecutor, dataDir string) {
-	if dataDir == "" {
-		dataDir = "./data"
+func registerBashTool(executor *ToolExecutor) {
+	// Persistent shell state: tracks working directory between calls.
+	shellState := &persistentShellState{
+		cwd: "",
+		env: map[string]string{},
 	}
 
-	// read_file
+	// bash — full access command execution inheriting the user's environment.
 	executor.Register(
-		MakeToolDefinition("read_file", "Read the contents of a file from the workspace data directory.", map[string]any{
+		MakeToolDefinition("bash", "Execute a bash command with full system access. Inherits the user's complete environment (PATH, SSH keys, etc). Supports cd (persistent between calls), git, ssh, docker, package managers, builds, system administration, or any shell operation. The command runs directly on the host machine as the current user.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "Bash command to execute. cd is tracked between calls.",
+				},
+				"working_dir": map[string]any{
+					"type":        "string",
+					"description": "Override working directory for this command",
+				},
+				"timeout_seconds": map[string]any{
+					"type":        "integer",
+					"description": "Timeout in seconds (default: 120, max: 600)",
+				},
+			},
+			"required": []string{"command"},
+		}),
+		func(ctx context.Context, args map[string]any) (any, error) {
+			command, _ := args["command"].(string)
+			if command == "" {
+				return nil, fmt.Errorf("command is required")
+			}
+
+			timeout := 120 * time.Second
+			if t, ok := args["timeout_seconds"].(float64); ok && t > 0 {
+				if t > 600 {
+					t = 600
+				}
+				timeout = time.Duration(t) * time.Second
+			}
+
+			cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+
+			// Wrap in a login shell to inherit the user's full environment
+			// (~/.bashrc, ~/.profile, SSH agent, etc).
+			wrappedCmd := command
+
+			// If we have a persistent cwd, prepend cd.
+			wd := ""
+			if w, ok := args["working_dir"].(string); ok && w != "" {
+				wd = w
+			} else if shellState.cwd != "" {
+				wd = shellState.cwd
+			}
+
+			if wd != "" {
+				wrappedCmd = fmt.Sprintf("cd %q && %s", wd, command)
+			}
+
+			// Append pwd capture to track cd.
+			wrappedCmd += " ; __exit=$?; echo \"__GOCLAW_CWD=$(pwd)\"; exit $__exit"
+
+			cmd := exec.CommandContext(cmdCtx, "bash", "-l", "-c", wrappedCmd)
+			cmd.Env = os.Environ() // Inherit full user environment.
+
+			// Add any extra env vars set via set_env.
+			for k, v := range shellState.env {
+				cmd.Env = append(cmd.Env, k+"="+v)
+			}
+
+			out, err := cmd.CombinedOutput()
+			output := string(out)
+
+			// Extract and update persistent cwd.
+			if idx := strings.LastIndex(output, "__GOCLAW_CWD="); idx >= 0 {
+				cwdLine := output[idx+len("__GOCLAW_CWD="):]
+				if nl := strings.Index(cwdLine, "\n"); nl >= 0 {
+					shellState.cwd = strings.TrimSpace(cwdLine[:nl])
+				} else {
+					shellState.cwd = strings.TrimSpace(cwdLine)
+				}
+				// Remove the cwd marker from output.
+				output = output[:idx]
+			}
+
+			output = strings.TrimRight(output, "\n ")
+
+			// Truncate very long output.
+			if len(output) > 50000 {
+				output = output[:50000] + "\n... [truncated, output too long]"
+			}
+
+			if err != nil {
+				if cmdCtx.Err() != nil {
+					return fmt.Sprintf("Command timed out after %v.\n\nPartial output:\n%s", timeout, output), nil
+				}
+				return fmt.Sprintf("Exit code: non-zero\n%s", output), nil
+			}
+
+			if output == "" {
+				output = "(no output)"
+			}
+
+			return output, nil
+		},
+	)
+
+	// ssh — execute commands on remote machines via SSH.
+	executor.Register(
+		MakeToolDefinition("ssh", "Execute a command on a remote machine via SSH. Uses the user's SSH keys and config (~/.ssh/config). Supports any host configured in SSH config or direct user@host.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"host": map[string]any{
+					"type":        "string",
+					"description": "SSH host (e.g. 'myserver', 'user@192.168.1.10', 'deploy@prod.example.com')",
+				},
+				"command": map[string]any{
+					"type":        "string",
+					"description": "Command to execute on the remote machine",
+				},
+				"port": map[string]any{
+					"type":        "integer",
+					"description": "SSH port (default: 22, or as configured in ~/.ssh/config)",
+				},
+				"identity_file": map[string]any{
+					"type":        "string",
+					"description": "Path to SSH private key (default: uses ssh-agent or ~/.ssh/id_*)",
+				},
+				"timeout_seconds": map[string]any{
+					"type":        "integer",
+					"description": "Timeout in seconds (default: 60)",
+				},
+			},
+			"required": []string{"host", "command"},
+		}),
+		func(ctx context.Context, args map[string]any) (any, error) {
+			host, _ := args["host"].(string)
+			command, _ := args["command"].(string)
+			if host == "" || command == "" {
+				return nil, fmt.Errorf("host and command are required")
+			}
+
+			timeout := 60 * time.Second
+			if t, ok := args["timeout_seconds"].(float64); ok && t > 0 {
+				timeout = time.Duration(t) * time.Second
+			}
+
+			cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+
+			sshArgs := []string{
+				"-o", "StrictHostKeyChecking=accept-new",
+				"-o", "ConnectTimeout=10",
+				"-o", "BatchMode=yes",
+			}
+
+			if port, ok := args["port"].(float64); ok && port > 0 {
+				sshArgs = append(sshArgs, "-p", fmt.Sprintf("%d", int(port)))
+			}
+
+			if keyFile, ok := args["identity_file"].(string); ok && keyFile != "" {
+				sshArgs = append(sshArgs, "-i", resolvePath(keyFile))
+			}
+
+			sshArgs = append(sshArgs, host, command)
+
+			cmd := exec.CommandContext(cmdCtx, "ssh", sshArgs...)
+			cmd.Env = os.Environ() // Inherit SSH agent, keys, etc.
+
+			out, err := cmd.CombinedOutput()
+			output := strings.TrimRight(string(out), "\n ")
+
+			if len(output) > 50000 {
+				output = output[:50000] + "\n... [truncated]"
+			}
+
+			if err != nil {
+				if cmdCtx.Err() != nil {
+					return fmt.Sprintf("SSH timed out after %v.\n\nPartial output:\n%s", timeout, output), nil
+				}
+				return fmt.Sprintf("SSH error: %v\n%s", err, output), nil
+			}
+
+			if output == "" {
+				output = "(no output)"
+			}
+
+			return output, nil
+		},
+	)
+
+	// scp — copy files to/from remote machines.
+	executor.Register(
+		MakeToolDefinition("scp", "Copy files between local machine and remote hosts via SCP/SFTP. Uses the user's SSH keys and config.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"source": map[string]any{
+					"type":        "string",
+					"description": "Source path. For remote: 'user@host:/path'. For local: '/local/path'",
+				},
+				"destination": map[string]any{
+					"type":        "string",
+					"description": "Destination path. For remote: 'user@host:/path'. For local: '/local/path'",
+				},
+				"recursive": map[string]any{
+					"type":        "boolean",
+					"description": "Copy directories recursively. Default: false",
+				},
+			},
+			"required": []string{"source", "destination"},
+		}),
+		func(ctx context.Context, args map[string]any) (any, error) {
+			source, _ := args["source"].(string)
+			dest, _ := args["destination"].(string)
+			recursive, _ := args["recursive"].(bool)
+
+			if source == "" || dest == "" {
+				return nil, fmt.Errorf("source and destination are required")
+			}
+
+			cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+
+			scpArgs := []string{
+				"-o", "StrictHostKeyChecking=accept-new",
+				"-o", "ConnectTimeout=10",
+			}
+			if recursive {
+				scpArgs = append(scpArgs, "-r")
+			}
+			scpArgs = append(scpArgs, source, dest)
+
+			cmd := exec.CommandContext(cmdCtx, "scp", scpArgs...)
+			cmd.Env = os.Environ()
+
+			out, err := cmd.CombinedOutput()
+			output := strings.TrimRight(string(out), "\n ")
+
+			if err != nil {
+				return fmt.Sprintf("SCP error: %v\n%s", err, output), nil
+			}
+
+			return fmt.Sprintf("Copied: %s -> %s\n%s", source, dest, output), nil
+		},
+	)
+
+	// set_env — set environment variables for subsequent bash/ssh calls.
+	executor.Register(
+		MakeToolDefinition("set_env", "Set an environment variable that persists across subsequent bash calls in this session.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Environment variable name",
+				},
+				"value": map[string]any{
+					"type":        "string",
+					"description": "Environment variable value",
+				},
+			},
+			"required": []string{"name", "value"},
+		}),
+		func(_ context.Context, args map[string]any) (any, error) {
+			name, _ := args["name"].(string)
+			value, _ := args["value"].(string)
+			if name == "" {
+				return nil, fmt.Errorf("name is required")
+			}
+
+			shellState.env[name] = value
+			return fmt.Sprintf("Set %s=%s", name, value), nil
+		},
+	)
+}
+
+// persistentShellState tracks state between bash tool calls.
+type persistentShellState struct {
+	cwd string            // Current working directory.
+	env map[string]string  // Extra environment variables.
+}
+
+// ---------- File Tools (full filesystem access) ----------
+
+func registerFileTools(executor *ToolExecutor, _ string) {
+	// read_file — reads any file on the machine.
+	executor.Register(
+		MakeToolDefinition("read_file", "Read the contents of any file on the machine. Supports absolute and relative paths. Returns up to 100KB of text content.", map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Relative file path within the data directory",
+					"description": "File path (absolute or relative)",
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Line number to start reading from (1-based, default: 1)",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of lines to return (default: all)",
 				},
 			},
 			"required": []string{"path"},
 		}),
 		func(_ context.Context, args map[string]any) (any, error) {
-			relPath, _ := args["path"].(string)
-			if relPath == "" {
+			filePath, _ := args["path"].(string)
+			if filePath == "" {
 				return nil, fmt.Errorf("path is required")
 			}
 
-			// Prevent path traversal.
-			cleaned := filepath.Clean(relPath)
-			if strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
-				return nil, fmt.Errorf("invalid path: must be relative and within data directory")
-			}
+			filePath = resolvePath(filePath)
 
-			fullPath := filepath.Join(dataDir, cleaned)
-			content, err := os.ReadFile(fullPath)
+			content, err := os.ReadFile(filePath)
 			if err != nil {
 				return nil, fmt.Errorf("reading file: %w", err)
 			}
 
 			text := string(content)
-			if len(text) > 20000 {
-				text = text[:20000] + "\n... [truncated]"
+
+			// Apply offset/limit if specified.
+			offset := 0
+			if o, ok := args["offset"].(float64); ok && o > 1 {
+				offset = int(o) - 1 // Convert 1-based to 0-based.
 			}
+
+			limit := 0
+			if l, ok := args["limit"].(float64); ok && l > 0 {
+				limit = int(l)
+			}
+
+			if offset > 0 || limit > 0 {
+				lines := strings.Split(text, "\n")
+				if offset >= len(lines) {
+					return "(offset beyond end of file)", nil
+				}
+				lines = lines[offset:]
+				if limit > 0 && limit < len(lines) {
+					lines = lines[:limit]
+				}
+				text = strings.Join(lines, "\n")
+			}
+
+			// Truncate for safety.
+			if len(text) > 100000 {
+				text = text[:100000] + "\n... [truncated at 100KB]"
+			}
+
 			return text, nil
 		},
 	)
 
-	// write_file
+	// write_file — writes to any file on the machine.
 	executor.Register(
-		MakeToolDefinition("write_file", "Write content to a file in the workspace data directory. Creates directories if needed.", map[string]any{
+		MakeToolDefinition("write_file", "Write content to any file on the machine. Creates parent directories if needed. Supports absolute and relative paths.", map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Relative file path within the data directory",
+					"description": "File path (absolute or relative)",
 				},
 				"content": map[string]any{
 					"type":        "string",
@@ -332,95 +650,459 @@ func registerFileTools(executor *ToolExecutor, dataDir string) {
 					"type":        "boolean",
 					"description": "If true, append to file instead of overwriting. Default: false",
 				},
+				"mode": map[string]any{
+					"type":        "string",
+					"description": "File permissions in octal (e.g. '0755' for executable). Default: '0644'",
+				},
 			},
 			"required": []string{"path", "content"},
 		}),
 		func(_ context.Context, args map[string]any) (any, error) {
-			relPath, _ := args["path"].(string)
+			filePath, _ := args["path"].(string)
 			content, _ := args["content"].(string)
 			appendMode, _ := args["append"].(bool)
 
-			if relPath == "" {
+			if filePath == "" {
 				return nil, fmt.Errorf("path is required")
 			}
 
-			cleaned := filepath.Clean(relPath)
-			if strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
-				return nil, fmt.Errorf("invalid path: must be relative and within data directory")
+			filePath = resolvePath(filePath)
+
+			// Parse file mode.
+			fileMode := os.FileMode(0o644)
+			if m, ok := args["mode"].(string); ok && m != "" {
+				var parsed uint64
+				_, err := fmt.Sscanf(m, "%o", &parsed)
+				if err == nil {
+					fileMode = os.FileMode(parsed)
+				}
 			}
 
-			fullPath := filepath.Join(dataDir, cleaned)
-
 			// Ensure parent directory exists.
-			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 				return nil, fmt.Errorf("creating directory: %w", err)
 			}
 
 			var err error
 			if appendMode {
-				f, openErr := os.OpenFile(fullPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+				f, openErr := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, fileMode)
 				if openErr != nil {
 					return nil, fmt.Errorf("opening file: %w", openErr)
 				}
 				_, err = f.WriteString(content)
 				f.Close()
 			} else {
-				err = os.WriteFile(fullPath, []byte(content), 0o644)
+				err = os.WriteFile(filePath, []byte(content), fileMode)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("writing file: %w", err)
 			}
 
-			return fmt.Sprintf("Written %d bytes to %s", len(content), relPath), nil
+			return fmt.Sprintf("Written %d bytes to %s", len(content), filePath), nil
 		},
 	)
 
-	// list_files
+	// edit_file — search-and-replace edit on any file.
 	executor.Register(
-		MakeToolDefinition("list_files", "List files in a directory within the workspace data directory.", map[string]any{
+		MakeToolDefinition("edit_file", "Edit a file by replacing a specific text occurrence. Finds old_text in the file and replaces it with new_text. Use for precise code modifications.", map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Relative directory path (default: root of data dir)",
+					"description": "File path (absolute or relative)",
+				},
+				"old_text": map[string]any{
+					"type":        "string",
+					"description": "Exact text to find and replace (must be unique in the file)",
+				},
+				"new_text": map[string]any{
+					"type":        "string",
+					"description": "Text to replace old_text with",
+				},
+				"replace_all": map[string]any{
+					"type":        "boolean",
+					"description": "If true, replace all occurrences. Default: false (replace first only)",
+				},
+			},
+			"required": []string{"path", "old_text", "new_text"},
+		}),
+		func(_ context.Context, args map[string]any) (any, error) {
+			filePath, _ := args["path"].(string)
+			oldText, _ := args["old_text"].(string)
+			newText, _ := args["new_text"].(string)
+			replaceAll, _ := args["replace_all"].(bool)
+
+			if filePath == "" || oldText == "" {
+				return nil, fmt.Errorf("path and old_text are required")
+			}
+
+			filePath = resolvePath(filePath)
+
+			content, err := os.ReadFile(filePath)
+			if err != nil {
+				return nil, fmt.Errorf("reading file: %w", err)
+			}
+
+			text := string(content)
+			if !strings.Contains(text, oldText) {
+				return nil, fmt.Errorf("old_text not found in %s", filePath)
+			}
+
+			count := strings.Count(text, oldText)
+			if !replaceAll && count > 1 {
+				return nil, fmt.Errorf("old_text found %d times in file — provide more context to make it unique, or set replace_all=true", count)
+			}
+
+			var newContent string
+			if replaceAll {
+				newContent = strings.ReplaceAll(text, oldText, newText)
+			} else {
+				newContent = strings.Replace(text, oldText, newText, 1)
+			}
+
+			// Preserve original file permissions.
+			info, _ := os.Stat(filePath)
+			mode := os.FileMode(0o644)
+			if info != nil {
+				mode = info.Mode()
+			}
+
+			if err := os.WriteFile(filePath, []byte(newContent), mode); err != nil {
+				return nil, fmt.Errorf("writing file: %w", err)
+			}
+
+			replaced := 1
+			if replaceAll {
+				replaced = count
+			}
+			return fmt.Sprintf("Replaced %d occurrence(s) in %s", replaced, filePath), nil
+		},
+	)
+
+	// list_files — list any directory.
+	executor.Register(
+		MakeToolDefinition("list_files", "List files and directories at any path on the machine. Returns names, sizes, permissions, and modification times.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Directory path (absolute or relative). Default: current directory",
+				},
+				"recursive": map[string]any{
+					"type":        "boolean",
+					"description": "If true, list recursively (max 500 entries). Default: false",
+				},
+				"pattern": map[string]any{
+					"type":        "string",
+					"description": "Glob pattern to filter files (e.g. '*.go', '*.py')",
 				},
 			},
 		}),
 		func(_ context.Context, args map[string]any) (any, error) {
-			relPath, _ := args["path"].(string)
-			if relPath == "" {
-				relPath = "."
+			dirPath, _ := args["path"].(string)
+			if dirPath == "" {
+				dirPath = "."
 			}
+			recursive, _ := args["recursive"].(bool)
+			pattern, _ := args["pattern"].(string)
 
-			cleaned := filepath.Clean(relPath)
-			if strings.HasPrefix(cleaned, "..") || filepath.IsAbs(cleaned) {
-				return nil, fmt.Errorf("invalid path")
-			}
+			dirPath = resolvePath(dirPath)
 
-			fullPath := filepath.Join(dataDir, cleaned)
-			entries, err := os.ReadDir(fullPath)
-			if err != nil {
-				return nil, fmt.Errorf("reading directory: %w", err)
-			}
-
-			var items []map[string]any
-			for _, e := range entries {
-				info, _ := e.Info()
-				item := map[string]any{
-					"name":  e.Name(),
-					"is_dir": e.IsDir(),
+			if !recursive {
+				entries, err := os.ReadDir(dirPath)
+				if err != nil {
+					return nil, fmt.Errorf("reading directory: %w", err)
 				}
-				if info != nil {
-					item["size"] = info.Size()
-					item["modified"] = info.ModTime().Format(time.RFC3339)
+
+				var sb strings.Builder
+				for _, e := range entries {
+					info, _ := e.Info()
+					prefix := "  "
+					if e.IsDir() {
+						prefix = "d "
+					}
+					size := int64(0)
+					mod := ""
+					if info != nil {
+						size = info.Size()
+						mod = info.ModTime().Format("2006-01-02 15:04")
+					}
+					name := e.Name()
+					if pattern != "" {
+						matched, _ := filepath.Match(pattern, name)
+						if !matched {
+							continue
+						}
+					}
+					sb.WriteString(fmt.Sprintf("%s %8d  %s  %s\n", prefix, size, mod, name))
 				}
-				items = append(items, item)
+				return sb.String(), nil
 			}
 
-			result, _ := json.MarshalIndent(items, "", "  ")
-			return string(result), nil
+			// Recursive listing.
+			var sb strings.Builder
+			count := 0
+			_ = filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return nil // Skip errors.
+				}
+				if count >= 500 {
+					return filepath.SkipAll
+				}
+
+				// Skip hidden directories like .git.
+				if info.IsDir() && strings.HasPrefix(info.Name(), ".") && path != dirPath {
+					return filepath.SkipDir
+				}
+
+				rel, _ := filepath.Rel(dirPath, path)
+				if rel == "." {
+					return nil
+				}
+
+				if pattern != "" {
+					matched, _ := filepath.Match(pattern, info.Name())
+					if !matched && !info.IsDir() {
+						return nil
+					}
+				}
+
+				prefix := "  "
+				if info.IsDir() {
+					prefix = "d "
+				}
+				sb.WriteString(fmt.Sprintf("%s %8d  %s\n", prefix, info.Size(), rel))
+				count++
+				return nil
+			})
+
+			if count >= 500 {
+				sb.WriteString("\n... [truncated at 500 entries]")
+			}
+			return sb.String(), nil
 		},
 	)
+
+	// search_files — grep-like search across files.
+	executor.Register(
+		MakeToolDefinition("search_files", "Search for text patterns in files. Similar to grep. Searches recursively in the given directory.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pattern": map[string]any{
+					"type":        "string",
+					"description": "Text or regex pattern to search for",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Directory to search in (default: current directory)",
+				},
+				"file_pattern": map[string]any{
+					"type":        "string",
+					"description": "Glob to filter files (e.g. '*.go', '*.py')",
+				},
+				"case_insensitive": map[string]any{
+					"type":        "boolean",
+					"description": "Case insensitive search. Default: false",
+				},
+				"max_results": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of matching lines to return (default: 50)",
+				},
+			},
+			"required": []string{"pattern"},
+		}),
+		func(ctx context.Context, args map[string]any) (any, error) {
+			pattern, _ := args["pattern"].(string)
+			if pattern == "" {
+				return nil, fmt.Errorf("pattern is required")
+			}
+
+			searchDir, _ := args["path"].(string)
+			if searchDir == "" {
+				searchDir = "."
+			}
+			searchDir = resolvePath(searchDir)
+
+			filePattern, _ := args["file_pattern"].(string)
+			caseInsensitive, _ := args["case_insensitive"].(bool)
+
+			maxResults := 50
+			if m, ok := args["max_results"].(float64); ok && m > 0 {
+				maxResults = int(m)
+			}
+
+			// Use ripgrep if available, otherwise grep.
+			rgArgs := []string{"--no-heading", "--line-number", "--color=never"}
+			if caseInsensitive {
+				rgArgs = append(rgArgs, "-i")
+			}
+			if filePattern != "" {
+				rgArgs = append(rgArgs, "-g", filePattern)
+			}
+			rgArgs = append(rgArgs, fmt.Sprintf("-m%d", maxResults))
+			rgArgs = append(rgArgs, pattern, searchDir)
+
+			cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+
+			// Try ripgrep first.
+			cmd := execCommandContext(cmdCtx, "rg", rgArgs...)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				// Fallback to grep.
+				grepArgs := []string{"-rn", "--color=never"}
+				if caseInsensitive {
+					grepArgs = append(grepArgs, "-i")
+				}
+				if filePattern != "" {
+					grepArgs = append(grepArgs, "--include="+filePattern)
+				}
+				grepArgs = append(grepArgs, fmt.Sprintf("-m%d", maxResults))
+				grepArgs = append(grepArgs, pattern, searchDir)
+
+				cmd = execCommandContext(cmdCtx, "grep", grepArgs...)
+				out, err = cmd.CombinedOutput()
+				if err != nil && len(out) == 0 {
+					return fmt.Sprintf("No matches found for %q in %s", pattern, searchDir), nil
+				}
+			}
+
+			output := string(out)
+			if len(output) > 50000 {
+				output = output[:50000] + "\n... [truncated]"
+			}
+			if output == "" {
+				return fmt.Sprintf("No matches found for %q in %s", pattern, searchDir), nil
+			}
+			return output, nil
+		},
+	)
+
+	// glob_files — find files by glob pattern.
+	executor.Register(
+		MakeToolDefinition("glob_files", "Find files matching a glob pattern. Searches recursively from the given directory.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pattern": map[string]any{
+					"type":        "string",
+					"description": "Glob pattern (e.g. '**/*.go', 'src/**/*.ts', '*.py')",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Base directory (default: current directory)",
+				},
+			},
+			"required": []string{"pattern"},
+		}),
+		func(_ context.Context, args map[string]any) (any, error) {
+			pattern, _ := args["pattern"].(string)
+			if pattern == "" {
+				return nil, fmt.Errorf("pattern is required")
+			}
+
+			baseDir, _ := args["path"].(string)
+			if baseDir == "" {
+				baseDir = "."
+			}
+			baseDir = resolvePath(baseDir)
+
+			// If pattern is relative, combine with base dir.
+			if !filepath.IsAbs(pattern) {
+				pattern = filepath.Join(baseDir, pattern)
+			}
+
+			matches, err := filepath.Glob(pattern)
+			if err != nil {
+				// filepath.Glob doesn't support **. Walk manually.
+				matches = globRecursive(baseDir, args["pattern"].(string))
+			}
+
+			if len(matches) == 0 {
+				return "No files found.", nil
+			}
+
+			if len(matches) > 200 {
+				matches = matches[:200]
+			}
+
+			return strings.Join(matches, "\n"), nil
+		},
+	)
+}
+
+// resolvePath resolves a file path, expanding ~ and making relative paths absolute.
+func resolvePath(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			p = filepath.Join(home, p[2:])
+		}
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	return abs
+}
+
+// globRecursive implements a simple recursive glob supporting ** patterns.
+func globRecursive(baseDir, pattern string) []string {
+	var matches []string
+
+	// Extract the file-level pattern (last component after any **/).
+	fileGlob := pattern
+	if idx := strings.LastIndex(pattern, "/"); idx >= 0 {
+		fileGlob = pattern[idx+1:]
+	}
+
+	count := 0
+	_ = filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || count >= 200 {
+			if count >= 200 {
+				return filepath.SkipAll
+			}
+			return nil
+		}
+		if info.IsDir() {
+			// Skip hidden directories.
+			if strings.HasPrefix(info.Name(), ".") && path != baseDir {
+				return filepath.SkipDir
+			}
+			// Skip common non-useful dirs.
+			name := info.Name()
+			if name == "node_modules" || name == "vendor" || name == "__pycache__" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		matched, _ := filepath.Match(fileGlob, info.Name())
+		if matched {
+			matches = append(matches, path)
+			count++
+		}
+		return nil
+	})
+
+	return matches
+}
+
+// execCommandContext wraps exec.CommandContext for use in tools.
+func execCommandContext(ctx context.Context, name string, args ...string) *osExecCmd {
+	return &osExecCmd{cmd: exec.CommandContext(ctx, name, args...)}
+}
+
+// osExecCmd wraps exec.Cmd.
+type osExecCmd struct {
+	cmd *exec.Cmd
+	Dir string
+}
+
+func (c *osExecCmd) CombinedOutput() ([]byte, error) {
+	if c.Dir != "" {
+		c.cmd.Dir = c.Dir
+	}
+	return c.cmd.CombinedOutput()
 }
 
 // ---------- Memory Tools ----------
