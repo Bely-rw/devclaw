@@ -38,11 +38,23 @@ type UsageTracker struct {
 }
 
 var defaultModelCosts = map[string]ModelCost{
-	"gpt-4o":            {InputPer1M: 2.50, OutputPer1M: 10.00},
-	"gpt-4o-mini":       {InputPer1M: 0.15, OutputPer1M: 0.60},
-	"gpt-5-mini":        {InputPer1M: 0.15, OutputPer1M: 0.60},
+	// OpenAI
+	"gpt-4o":          {InputPer1M: 2.50, OutputPer1M: 10.00},
+	"gpt-4o-mini":     {InputPer1M: 0.15, OutputPer1M: 0.60},
+	"gpt-4.5-preview": {InputPer1M: 75.00, OutputPer1M: 150.00},
+	"gpt-5":           {InputPer1M: 2.00, OutputPer1M: 8.00},
+	"gpt-5-mini":      {InputPer1M: 0.15, OutputPer1M: 0.60},
+	// Anthropic
+	"claude-opus-4.6":   {InputPer1M: 5.00, OutputPer1M: 25.00},
+	"claude-opus-4.5":   {InputPer1M: 5.00, OutputPer1M: 25.00},
+	"claude-sonnet-4.5": {InputPer1M: 3.00, OutputPer1M: 15.00},
 	"claude-3.5-sonnet": {InputPer1M: 3.00, OutputPer1M: 15.00},
-	"glm-4.7-flash":     {InputPer1M: 0.10, OutputPer1M: 0.40},
+	// GLM (Z.AI)
+	"glm-5":           {InputPer1M: 1.00, OutputPer1M: 3.20},
+	"glm-5-code":      {InputPer1M: 1.20, OutputPer1M: 5.00},
+	"glm-4.7":         {InputPer1M: 0.50, OutputPer1M: 1.50},
+	"glm-4.7-flash":   {InputPer1M: 0.10, OutputPer1M: 0.40},
+	"glm-4.7-flashx":  {InputPer1M: 0.10, OutputPer1M: 0.40},
 }
 
 // NewUsageTracker creates a new UsageTracker.

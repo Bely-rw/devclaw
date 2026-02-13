@@ -1,11 +1,11 @@
 package commands
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/jholhewres/goclaw/pkg/goclaw/copilot"
 	"github.com/spf13/cobra"
 )
@@ -16,7 +16,7 @@ func newSetupCmd() *cobra.Command {
 		Use:   "setup",
 		Short: "Interactive setup wizard",
 		Long: `Starts an interactive wizard to create your initial config.yaml.
-Asks for assistant name, owner phone number, model, language, and other essentials.
+Uses arrow keys (↑/↓) to select options. Navigate with Tab/Shift+Tab.
 API keys are stored in an encrypted vault (AES-256-GCM) — never in plaintext.
 
 Examples:
@@ -39,269 +39,356 @@ const (
 	storageKeyring               // OS keyring
 )
 
+// ── Provider / URL mapping ──
+
+type providerDef struct {
+	key   string
+	label string
+	url   string
+}
+
+var knownProviders = []providerDef{
+	{"openai", "OpenAI", "https://api.openai.com/v1"},
+	{"zai", "Z.AI (API)", "https://api.z.ai/api/paas/v4"},
+	{"zai-coding", "Z.AI (Coding)", "https://api.z.ai/api/coding/paas/v4"},
+	{"zai-anthropic", "Z.AI (Anthropic proxy)", "https://api.z.ai/api/anthropic"},
+	{"anthropic", "Anthropic", "https://api.anthropic.com/v1"},
+}
+
+// providerForModel returns the best-match provider key for a model ID.
+func providerForModel(model string) string {
+	switch {
+	case strings.HasPrefix(model, "gpt-"):
+		return "openai"
+	case strings.HasPrefix(model, "claude-"):
+		return "anthropic"
+	case strings.HasPrefix(model, "glm-"):
+		return "zai"
+	default:
+		return "openai"
+	}
+}
+
+func providerURL(key string) string {
+	for _, p := range knownProviders {
+		if p.key == key {
+			return p.url
+		}
+	}
+	return "https://api.openai.com/v1"
+}
+
 // runInteractiveSetup guides the user through config creation step by step.
 func runInteractiveSetup() error {
-	reader := bufio.NewReader(os.Stdin)
 	cfg := copilot.DefaultConfig()
 	keyStorage := storageNone
 
+	// ── Variables to bind ──
+	var (
+		name      = cfg.Name
+		trigger   = cfg.Trigger
+		owner     string
+		policy    = string(cfg.Access.DefaultPolicy)
+		modelID   = cfg.Model
+		provider  string
+		language  = cfg.Language
+		timezone  = cfg.Timezone
+		instruct  = cfg.Instructions
+		groups    = true
+		dms       = true
+		doAdvance bool
+	)
+
+	// ── Banner ──
 	fmt.Println()
 	fmt.Println("╔══════════════════════════════════════════════╗")
-	fmt.Println("║         GoClaw Copilot — Setup Wizard        ║")
+	fmt.Println("║       GoClaw Copilot — Setup Wizard          ║")
+	fmt.Println("║   Use ↑/↓ arrows to select, Enter to confirm ║")
 	fmt.Println("╚══════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// ── Step 1: Assistant name ──
-	fmt.Printf("1. Assistant name [%s]: ", cfg.Name)
-	if name := readLine(reader); name != "" {
-		cfg.Name = name
+	// ═══════════════════════════════════════════════
+	// Group 1: Identity
+	// ═══════════════════════════════════════════════
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Assistant name").
+				Description("The name shown in responses").
+				Placeholder(cfg.Name).
+				Value(&name),
+
+			huh.NewInput().
+				Title("Trigger keyword").
+				Description("Keyword that activates the bot (e.g. @copilot)").
+				Placeholder(cfg.Trigger).
+				Value(&trigger),
+
+			huh.NewInput().
+				Title("Owner phone number").
+				Description("Full number with country code, no + or spaces (e.g. 5511999998888)").
+				Validate(func(s string) error {
+					n := normalizePhone(s)
+					if len(n) < 10 {
+						return fmt.Errorf("number too short — include country code")
+					}
+					return nil
+				}).
+				Value(&owner),
+
+			huh.NewSelect[string]().
+				Title("Access policy").
+				Description("How to handle unknown contacts").
+				Options(
+					huh.NewOption("deny — silently ignore (recommended)", "deny"),
+					huh.NewOption("allow — respond to everyone", "allow"),
+					huh.NewOption("ask — send a one-time access request", "ask"),
+				).
+				Value(&policy),
+		).Title("Identity & Access"),
+	).WithTheme(huh.ThemeDracula()).Run()
+	if err != nil {
+		return err
 	}
 
-	// ── Step 2: Trigger keyword ──
-	fmt.Printf("2. Trigger keyword [%s]: ", cfg.Trigger)
-	if trigger := readLine(reader); trigger != "" {
+	cfg.Name = name
+	if trigger != "" {
 		cfg.Trigger = trigger
 	}
+	cfg.Access.Owners = []string{normalizePhone(owner)}
+	cfg.Access.DefaultPolicy = copilot.AccessPolicy(policy)
 
-	// ── Step 3: Owner phone number ──
-	fmt.Println()
-	fmt.Println("   The owner has full control over the bot.")
-	fmt.Println("   Use your phone number with country code, no +, spaces or dashes.")
-	fmt.Println("   Example: 5511999998888")
-	fmt.Println()
-	for {
-		fmt.Print("3. Your phone number (owner): ")
-		owner := readLine(reader)
-		if owner == "" {
-			fmt.Println("   [!] Phone number is required. The bot needs at least one owner.")
-			continue
-		}
-		owner = normalizePhone(owner)
-		if len(owner) < 10 {
-			fmt.Println("   [!] Number seems too short. Include the country code (e.g. 5511999998888).")
-			continue
-		}
-		cfg.Access.Owners = []string{owner}
-		break
-	}
-
-	// ── Step 4: Access policy ──
-	fmt.Println()
-	fmt.Println("   Access policy for unknown contacts:")
-	fmt.Println("   deny  — silently ignore (recommended)")
-	fmt.Println("   allow — respond to everyone")
-	fmt.Println("   ask   — send a one-time access request message")
-	fmt.Println()
-	fmt.Printf("4. Access policy [%s]: ", cfg.Access.DefaultPolicy)
-	if policy := readLine(reader); policy != "" {
-		switch strings.ToLower(policy) {
-		case "deny", "allow", "ask":
-			cfg.Access.DefaultPolicy = copilot.AccessPolicy(strings.ToLower(policy))
-		default:
-			fmt.Println("   [!] Invalid value, using 'deny'.")
-		}
-	}
-
-	// ── Step 5: API provider ──
-	fmt.Println()
-	fmt.Println("   API endpoint (OpenAI-compatible):")
-	fmt.Println()
-	fmt.Printf("5. API base URL [%s]: ", cfg.API.BaseURL)
-	if url := readLine(reader); url != "" {
-		cfg.API.BaseURL = url
-	}
-
-	// ── Step 6: API key + encrypted vault ──
-	fmt.Println()
-	fmt.Println("   Your API key will be encrypted with AES-256-GCM and stored in a")
-	fmt.Println("   password-protected vault. Even with filesystem access, nobody can")
-	fmt.Println("   read it without your master password.")
-	fmt.Println()
-
-	apiKey, err := copilot.ReadPassword("6. API key (hidden input): ")
+	// ═══════════════════════════════════════════════
+	// Group 2: Model selection
+	// ═══════════════════════════════════════════════
+	err = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("LLM Model").
+				Description("Use ↑/↓ to browse, type to filter").
+				Height(15).
+				Options(
+					// OpenAI
+					huh.NewOption("GPT-5 Mini         — fast, cost-effective (default)", "gpt-5-mini"),
+					huh.NewOption("GPT-5              — latest OpenAI flagship", "gpt-5"),
+					huh.NewOption("GPT-4.5 Preview    — enhanced reasoning", "gpt-4.5-preview"),
+					huh.NewOption("GPT-4o             — great all-around", "gpt-4o"),
+					huh.NewOption("GPT-4o Mini        — fast and cheap", "gpt-4o-mini"),
+					// Anthropic
+					huh.NewOption("Claude Opus 4.6    — most capable Anthropic", "claude-opus-4.6"),
+					huh.NewOption("Claude Opus 4.5    — previous flagship", "claude-opus-4.5"),
+					huh.NewOption("Claude Sonnet 4.5  — balanced performance", "claude-sonnet-4.5"),
+					// GLM
+					huh.NewOption("GLM-5              — most capable GLM (Z.AI)", "glm-5"),
+					huh.NewOption("GLM-4.7            — balanced capability", "glm-4.7"),
+					huh.NewOption("GLM-4.7 Flash      — fast, low cost", "glm-4.7-flash"),
+					huh.NewOption("GLM-4.7 FlashX     — fast + extended context", "glm-4.7-flashx"),
+				).
+				Value(&modelID),
+		).Title("Model"),
+	).WithTheme(huh.ThemeDracula()).Run()
 	if err != nil {
-		// Fallback to visible input if terminal password reading fails.
-		fmt.Print("6. API key (or press Enter to skip): ")
-		apiKey = readLine(reader)
+		return err
+	}
+	cfg.Model = modelID
+
+	// Auto-detect best provider from model.
+	autoProvider := providerForModel(modelID)
+	provider = autoProvider
+
+	// ═══════════════════════════════════════════════
+	// Group 3: API provider (pre-selected from model)
+	// ═══════════════════════════════════════════════
+	// Build options with the auto-detected one first.
+	providerOpts := make([]huh.Option[string], 0, len(knownProviders)+1)
+	for _, p := range knownProviders {
+		label := fmt.Sprintf("%-22s — %s", p.label, p.url)
+		providerOpts = append(providerOpts, huh.NewOption(label, p.key))
+	}
+	providerOpts = append(providerOpts, huh.NewOption("Custom URL             — enter your own", "custom"))
+
+	err = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("API Provider").
+				Description(fmt.Sprintf("Auto-detected: %s (%s). Change if needed.", autoProvider, providerURL(autoProvider))).
+				Height(9).
+				Options(providerOpts...).
+				Value(&provider),
+		).Title("API Configuration"),
+	).WithTheme(huh.ThemeDracula()).Run()
+	if err != nil {
+		return err
+	}
+
+	if provider == "custom" {
+		customURL := ""
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Custom API URL").
+					Description("Enter your OpenAI-compatible endpoint").
+					Placeholder("https://my-api.example.com/v1").
+					Value(&customURL),
+			),
+		).WithTheme(huh.ThemeDracula()).Run()
+		if err != nil {
+			return err
+		}
+		cfg.API.BaseURL = customURL
+		cfg.API.Provider = ""
+	} else {
+		cfg.API.BaseURL = providerURL(provider)
+		cfg.API.Provider = provider
+	}
+
+	// ═══════════════════════════════════════════════
+	// Group 4: API key + vault
+	// ═══════════════════════════════════════════════
+	fmt.Println()
+	fmt.Println("  Your API key will be encrypted with AES-256-GCM and stored in a")
+	fmt.Println("  password-protected vault. Even with filesystem access, nobody can")
+	fmt.Println("  read it without your master password.")
+	fmt.Println()
+
+	apiKey, vaultErr := copilot.ReadPassword("  API key (hidden): ")
+	if vaultErr != nil {
+		// Fallback: use huh input.
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("API Key").
+					Description("Leave empty to configure later").
+					EchoMode(huh.EchoModePassword).
+					Value(&apiKey),
+			),
+		).WithTheme(huh.ThemeDracula()).Run()
+		if err != nil {
+			return err
+		}
 	}
 
 	if apiKey != "" {
 		keyStorage = setupVault(apiKey)
 		if keyStorage == storageNone {
-			fmt.Println("   [!] Could not store the API key securely.")
-			fmt.Println("   You can set it later with: copilot config vault-init && copilot config vault-set")
+			fmt.Println("  [!] Could not store API key securely.")
+			fmt.Println("  Set it later with: copilot config vault-init && copilot config vault-set")
 		}
 	} else {
-		fmt.Println("   Skipped. Set it later with: copilot config vault-init && copilot config vault-set")
+		fmt.Println("  Skipped. Set later with: copilot config vault-init && copilot config vault-set")
 	}
-
-	// config.yaml never contains the real key.
 	cfg.API.APIKey = "${GOCLAW_API_KEY}"
 
-	// ── Step 7: Model (interactive numbered list) ──
-	type modelOption struct {
-		id   string
-		name string
-		desc string
+	// ═══════════════════════════════════════════════
+	// Group 5: Language, Timezone, Instructions, WhatsApp
+	// ═══════════════════════════════════════════════
+	err = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Response language").
+				Placeholder(cfg.Language).
+				Value(&language),
+
+			huh.NewInput().
+				Title("Timezone").
+				Placeholder(cfg.Timezone).
+				Value(&timezone),
+
+			huh.NewInput().
+				Title("System instructions").
+				Description("Base system prompt. Press Enter to keep default.").
+				Placeholder("(keep default)").
+				Value(&instruct),
+		).Title("Preferences"),
+
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Respond in WhatsApp groups?").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&groups),
+
+			huh.NewConfirm().
+				Title("Respond in WhatsApp DMs?").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&dms),
+
+			huh.NewConfirm().
+				Title("Configure advanced settings?").
+				Description("Fallback models, gateway, heartbeat, security, autonomy, media, logging").
+				Affirmative("Yes").
+				Negative("No (use defaults)").
+				Value(&doAdvance),
+		).Title("WhatsApp & Advanced"),
+	).WithTheme(huh.ThemeDracula()).Run()
+	if err != nil {
+		return err
 	}
 
-	models := []modelOption{
-		// OpenAI
-		{"gpt-5-mini", "GPT-5 Mini", "fast and cost-effective (default)"},
-		{"gpt-5", "GPT-5", "latest OpenAI flagship"},
-		{"gpt-4.5-preview", "GPT-4.5 Preview", "enhanced reasoning"},
-		{"gpt-4o", "GPT-4o", "great all-around"},
-		{"gpt-4o-mini", "GPT-4o Mini", "fast and cheap"},
-		// Anthropic
-		{"claude-opus-4.6", "Claude Opus 4.6", "most capable Anthropic"},
-		{"claude-opus-4.5", "Claude Opus 4.5", "previous flagship"},
-		{"claude-sonnet-4.5", "Claude Sonnet 4.5", "balanced performance"},
-		// GLM (api.z.ai)
-		{"glm-5", "GLM-5", "most capable GLM"},
-		{"glm-4.7", "GLM-4.7", "balanced capability"},
-		{"glm-4.7-flash", "GLM-4.7 Flash", "fast, low cost"},
-		{"glm-4.7-flashx", "GLM-4.7 FlashX", "fast with extended context"},
+	if language != "" {
+		cfg.Language = language
 	}
+	if timezone != "" {
+		cfg.Timezone = timezone
+	}
+	if instruct != "" {
+		cfg.Instructions = instruct
+	}
+	cfg.Channels.WhatsApp.RespondToGroups = groups
+	cfg.Channels.WhatsApp.RespondToDMs = dms
 
-	defaultIdx := 0
-	for i, m := range models {
-		if m.id == cfg.Model {
-			defaultIdx = i
-			break
+	// ═══════════════════════════════════════════════
+	// Group 6: Advanced settings (optional)
+	// ═══════════════════════════════════════════════
+	if doAdvance {
+		if err := setupAdvanced(cfg); err != nil {
+			return err
 		}
 	}
 
-	fmt.Println()
-	fmt.Println("7. Select LLM model:")
-	fmt.Println()
-	fmt.Println("   OpenAI:")
-	for i := 0; i < 5; i++ {
-		marker := "  "
-		if i == defaultIdx {
-			marker = " *"
-		}
-		fmt.Printf("   %s %2d) %-20s — %s\n", marker, i+1, models[i].id, models[i].desc)
-	}
-	fmt.Println()
-	fmt.Println("   Anthropic:")
-	for i := 5; i < 8; i++ {
-		marker := "  "
-		if i == defaultIdx {
-			marker = " *"
-		}
-		fmt.Printf("   %s %2d) %-20s — %s\n", marker, i+1, models[i].id, models[i].desc)
-	}
-	fmt.Println()
-	fmt.Println("   GLM (api.z.ai):")
-	for i := 8; i < len(models); i++ {
-		marker := "  "
-		if i == defaultIdx {
-			marker = " *"
-		}
-		fmt.Printf("   %s %2d) %-20s — %s\n", marker, i+1, models[i].id, models[i].desc)
-	}
-	fmt.Println()
-	fmt.Printf("   Choose [1-%d] or type model name [%s]: ", len(models), cfg.Model)
+	// ═══════════════════════════════════════════════
+	// Summary + Confirm
+	// ═══════════════════════════════════════════════
+	printSummary(cfg, keyStorage)
 
-	if input := readLine(reader); input != "" {
-		if idx, err := fmt.Sscanf(input, "%d", new(int)); idx == 1 && err == nil {
-			var num int
-			fmt.Sscanf(input, "%d", &num)
-			if num >= 1 && num <= len(models) {
-				cfg.Model = models[num-1].id
-			} else {
-				fmt.Printf("   [!] Invalid number, keeping '%s'.\n", cfg.Model)
-			}
-		} else {
-			cfg.Model = input
-		}
+	var doSave bool
+	err = huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Save configuration to config.yaml?").
+				Affirmative("Yes, save").
+				Negative("Cancel").
+				Value(&doSave),
+		),
+	).WithTheme(huh.ThemeDracula()).Run()
+	if err != nil {
+		return err
 	}
 
-	// Auto-adjust API base URL based on model choice.
-	if strings.HasPrefix(cfg.Model, "glm-") && cfg.API.BaseURL == "https://api.openai.com/v1" {
-		cfg.API.BaseURL = "https://api.z.ai/api/anthropic"
-		fmt.Printf("   API URL auto-set to %s for GLM models.\n", cfg.API.BaseURL)
-	} else if strings.HasPrefix(cfg.Model, "claude-") && cfg.API.BaseURL == "https://api.openai.com/v1" {
-		cfg.API.BaseURL = "https://api.anthropic.com/v1"
-		fmt.Printf("   API URL auto-set to %s for Anthropic models.\n", cfg.API.BaseURL)
-	}
-
-	// ── Step 8: Language ──
-	fmt.Printf("8. Response language [%s]: ", cfg.Language)
-	if lang := readLine(reader); lang != "" {
-		cfg.Language = lang
-	}
-
-	// ── Step 9: Timezone ──
-	fmt.Printf("9. Timezone [%s]: ", cfg.Timezone)
-	if tz := readLine(reader); tz != "" {
-		cfg.Timezone = tz
-	}
-
-	// ── Step 10: System instructions ──
-	fmt.Println()
-	fmt.Println("   Base system instructions (system prompt).")
-	fmt.Println("   Press Enter to keep the default.")
-	fmt.Println()
-	fmt.Printf("10. Instructions [default]: ")
-	if instr := readLine(reader); instr != "" {
-		cfg.Instructions = instr
-	}
-
-	// ── Step 11: WhatsApp settings ──
-	fmt.Println()
-	fmt.Println("   WhatsApp settings:")
-	fmt.Println()
-
-	fmt.Printf("   Respond in groups? (y/n) [y]: ")
-	if g := readLine(reader); strings.ToLower(g) == "n" {
-		cfg.Channels.WhatsApp.RespondToGroups = false
-	}
-
-	fmt.Printf("   Respond in DMs? (y/n) [y]: ")
-	if d := readLine(reader); strings.ToLower(d) == "n" {
-		cfg.Channels.WhatsApp.RespondToDMs = false
-	}
-
-	// ── Summary ──
-	fmt.Println()
-	fmt.Println("─────────────────────────────────────────────")
-	fmt.Println("  Configuration summary:")
-	fmt.Println("─────────────────────────────────────────────")
-	fmt.Printf("  Name:      %s\n", cfg.Name)
-	fmt.Printf("  Trigger:   %s\n", cfg.Trigger)
-	fmt.Printf("  Owner:     %s\n", cfg.Access.Owners[0])
-	fmt.Printf("  Policy:    %s\n", cfg.Access.DefaultPolicy)
-	fmt.Printf("  API URL:   %s\n", cfg.API.BaseURL)
-	switch keyStorage {
-	case storageVault:
-		fmt.Println("  API key:   **** (encrypted vault)")
-	case storageKeyring:
-		fmt.Println("  API key:   **** (OS keyring)")
-	default:
-		fmt.Println("  API key:   (not set — configure later)")
-	}
-	fmt.Printf("  Model:     %s\n", cfg.Model)
-	fmt.Printf("  Language:  %s\n", cfg.Language)
-	fmt.Printf("  Timezone:  %s\n", cfg.Timezone)
-	fmt.Printf("  Groups:    %v\n", cfg.Channels.WhatsApp.RespondToGroups)
-	fmt.Printf("  DMs:       %v\n", cfg.Channels.WhatsApp.RespondToDMs)
-	fmt.Println("─────────────────────────────────────────────")
-	fmt.Println()
-
-	// ── Confirm and save ──
-	target := "config.yaml"
-	fmt.Printf("Save to %s? (y/n) [y]: ", target)
-	if confirm := readLine(reader); strings.ToLower(confirm) == "n" {
-		fmt.Println("Setup cancelled.")
+	if !doSave {
+		fmt.Println("  Setup cancelled.")
 		return nil
 	}
 
-	// Check if already exists.
-	if _, err := os.Stat(target); err == nil {
-		fmt.Printf("File %s already exists. Overwrite? (y/n) [n]: ", target)
-		if overwrite := readLine(reader); strings.ToLower(overwrite) != "y" {
-			fmt.Println("Setup cancelled. Existing file kept.")
+	// Check existing file.
+	target := "config.yaml"
+	if _, statErr := os.Stat(target); statErr == nil {
+		var overwrite bool
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewConfirm().
+					Title(fmt.Sprintf("%s already exists. Overwrite?", target)).
+					Affirmative("Yes, overwrite").
+					Negative("Cancel").
+					Value(&overwrite),
+			),
+		).WithTheme(huh.ThemeDracula()).Run()
+		if err != nil {
+			return err
+		}
+		if !overwrite {
+			fmt.Println("  Setup cancelled. Existing file kept.")
 			return nil
 		}
 	}
@@ -310,53 +397,338 @@ func runInteractiveSetup() error {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
-	fmt.Printf("\nconfig.yaml created successfully!\n\n")
+	fmt.Println()
+	fmt.Println("  ✓ config.yaml created successfully!")
+	fmt.Println()
 
-	fmt.Println("Security:")
+	// Security summary.
 	switch keyStorage {
 	case storageVault:
-		fmt.Println("  - API key encrypted in vault (AES-256-GCM + Argon2id)")
-		fmt.Println("  - Even with filesystem access, it cannot be read without your password")
-		fmt.Println("  - No plaintext secrets anywhere on disk")
+		fmt.Println("  Security:")
+		fmt.Println("    • API key encrypted in vault (AES-256-GCM + Argon2id)")
+		fmt.Println("    • No plaintext secrets anywhere on disk")
 	case storageKeyring:
-		fmt.Println("  - API key encrypted in OS keyring")
+		fmt.Println("  Security:")
+		fmt.Println("    • API key stored in OS keyring")
 	default:
-		fmt.Println("  - No API key configured yet")
-		fmt.Println("  - Run: copilot config vault-init && copilot config vault-set")
+		fmt.Println("  Security:")
+		fmt.Println("    • No API key configured yet")
+		fmt.Println("    • Run: copilot config vault-init && copilot config vault-set")
 	}
-	fmt.Println("  - config.yaml has no secrets (permissions: 600)")
 	fmt.Println()
-	fmt.Println("Next steps:")
-	fmt.Println("  1. Run: copilot serve")
-	fmt.Println("  2. Enter your vault password when prompted")
-	fmt.Println("  3. Scan the QR code with your WhatsApp")
+	fmt.Println("  Next steps:")
+	fmt.Println("    1. copilot serve")
+	fmt.Println("    2. Enter your vault password when prompted")
+	fmt.Println("    3. Scan the QR code with WhatsApp")
 	fmt.Println()
 
 	return nil
+}
+
+// setupAdvanced runs the interactive advanced configuration form.
+func setupAdvanced(cfg *copilot.Config) error {
+	var (
+		fallbackInput  string
+		gatewayEnabled bool
+		gatewayAddr    = cfg.Gateway.Address
+		gatewayToken   string
+		hbEnabled      bool
+		hbChannel      = "whatsapp"
+		hbChatID       string
+		allowDestr     bool
+		allowSudo      bool
+		confirmTools   = true
+		maxTurns       = fmt.Sprintf("%d", cfg.Agent.MaxTurns)
+		maxCont        = fmt.Sprintf("%d", cfg.Agent.MaxContinuations)
+		subEnabled     = true
+		maxConcurrent  = fmt.Sprintf("%d", cfg.Subagents.MaxConcurrent)
+		visionEnabled  = cfg.Media.VisionEnabled
+		audioEnabled   = cfg.Media.TranscriptionEnabled
+		logLevel       = cfg.Logging.Level
+	)
+
+	// ── Part A: Fallback + Gateway ──
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Fallback models").
+				Description("Comma-separated list of models to try if primary fails (Enter to skip)").
+				Placeholder("gpt-4o,glm-4.7-flash,claude-sonnet-4.5").
+				Value(&fallbackInput),
+
+			huh.NewConfirm().
+				Title("Enable HTTP API Gateway?").
+				Description("OpenAI-compatible REST API (chat completions, sessions, webhooks)").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&gatewayEnabled),
+		).Title("Fallback & Gateway"),
+	).WithTheme(huh.ThemeDracula()).Run()
+	if err != nil {
+		return err
+	}
+
+	if fallbackInput != "" {
+		parts := strings.Split(fallbackInput, ",")
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				cfg.Fallback.Models = append(cfg.Fallback.Models, p)
+			}
+		}
+	}
+
+	if gatewayEnabled {
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Gateway listen address").
+					Placeholder(cfg.Gateway.Address).
+					Value(&gatewayAddr),
+				huh.NewInput().
+					Title("Gateway auth token (optional)").
+					Description("Bearer token for API authentication. Leave empty for no auth.").
+					EchoMode(huh.EchoModePassword).
+					Value(&gatewayToken),
+			).Title("Gateway Settings"),
+		).WithTheme(huh.ThemeDracula()).Run()
+		if err != nil {
+			return err
+		}
+		cfg.Gateway.Enabled = true
+		if gatewayAddr != "" {
+			cfg.Gateway.Address = gatewayAddr
+		}
+		cfg.Gateway.AuthToken = gatewayToken
+	}
+
+	// ── Part B: Heartbeat + Security ──
+	err = huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Enable heartbeat?").
+				Description("Proactive checks for tasks, reminders, and scheduled actions").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&hbEnabled),
+		).Title("Heartbeat"),
+
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Allow owner to run destructive commands?").
+				Description("rm -rf, mkfs, dd, etc. — blocked by default").
+				Affirmative("Yes").
+				Negative("No (recommended)").
+				Value(&allowDestr),
+
+			huh.NewConfirm().
+				Title("Allow owner/admin to use sudo?").
+				Description("Blocked by default for safety").
+				Affirmative("Yes").
+				Negative("No (recommended)").
+				Value(&allowSudo),
+
+			huh.NewConfirm().
+				Title("Require confirmation for dangerous tools?").
+				Description("bash, ssh, scp, write_file will ask before executing").
+				Affirmative("Yes (recommended)").
+				Negative("No").
+				Value(&confirmTools),
+		).Title("Security"),
+	).WithTheme(huh.ThemeDracula()).Run()
+	if err != nil {
+		return err
+	}
+
+	if hbEnabled {
+		err = huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("Heartbeat channel").
+					Options(
+						huh.NewOption("WhatsApp", "whatsapp"),
+						huh.NewOption("CLI", "cli"),
+					).
+					Value(&hbChannel),
+				huh.NewInput().
+					Title("Chat ID for heartbeat messages").
+					Description("Your phone number for WhatsApp, or session ID for CLI").
+					Value(&hbChatID),
+			).Title("Heartbeat Settings"),
+		).WithTheme(huh.ThemeDracula()).Run()
+		if err != nil {
+			return err
+		}
+		cfg.Heartbeat.Enabled = true
+		cfg.Heartbeat.Channel = hbChannel
+		cfg.Heartbeat.ChatID = normalizePhone(hbChatID)
+	}
+
+	cfg.Security.ToolGuard.AllowDestructive = allowDestr
+	cfg.Security.ToolGuard.AllowSudo = allowSudo
+	if confirmTools {
+		cfg.Security.ToolGuard.RequireConfirmation = []string{"bash", "ssh", "scp", "write_file"}
+	} else {
+		cfg.Security.ToolGuard.RequireConfirmation = []string{}
+	}
+
+	// ── Part C: Autonomy + Media + Logging ──
+	err = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Max turns per request").
+				Description("How many reasoning steps the agent can take (default: 25)").
+				Placeholder("25").
+				Value(&maxTurns),
+
+			huh.NewInput().
+				Title("Max auto-continuations").
+				Description("Auto-continue when agent is still working (default: 2, 0=disable)").
+				Placeholder("2").
+				Value(&maxCont),
+
+			huh.NewConfirm().
+				Title("Enable subagent orchestration?").
+				Description("Allow the agent to spawn child agents for parallel tasks").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&subEnabled),
+		).Title("Agent Autonomy"),
+
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Enable vision (image understanding)?").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&visionEnabled),
+
+			huh.NewConfirm().
+				Title("Enable audio transcription (Whisper)?").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&audioEnabled),
+
+			huh.NewSelect[string]().
+				Title("Log level").
+				Options(
+					huh.NewOption("info — standard (recommended)", "info"),
+					huh.NewOption("debug — verbose", "debug"),
+					huh.NewOption("warn — warnings and errors only", "warn"),
+					huh.NewOption("error — errors only", "error"),
+				).
+				Value(&logLevel),
+		).Title("Media & Logging"),
+	).WithTheme(huh.ThemeDracula()).Run()
+	if err != nil {
+		return err
+	}
+
+	if n := parseInt(maxTurns, cfg.Agent.MaxTurns); n > 0 {
+		cfg.Agent.MaxTurns = n
+	}
+	if n := parseInt(maxCont, cfg.Agent.MaxContinuations); n >= 0 {
+		cfg.Agent.MaxContinuations = n
+	}
+	cfg.Subagents.Enabled = subEnabled
+	if subEnabled {
+		if n := parseInt(maxConcurrent, cfg.Subagents.MaxConcurrent); n > 0 {
+			cfg.Subagents.MaxConcurrent = n
+		}
+	}
+	cfg.Media.VisionEnabled = visionEnabled
+	cfg.Media.TranscriptionEnabled = audioEnabled
+	cfg.Logging.Level = logLevel
+
+	return nil
+}
+
+// printSummary displays the configuration summary.
+func printSummary(cfg *copilot.Config, keyStorage storageMethod) {
+	fmt.Println()
+	fmt.Println("─────────────────────────────────────────────")
+	fmt.Println("  Configuration summary:")
+	fmt.Println("─────────────────────────────────────────────")
+	fmt.Printf("  Name:       %s\n", cfg.Name)
+	fmt.Printf("  Trigger:    %s\n", cfg.Trigger)
+	if len(cfg.Access.Owners) > 0 {
+		fmt.Printf("  Owner:      %s\n", cfg.Access.Owners[0])
+	}
+	fmt.Printf("  Policy:     %s\n", cfg.Access.DefaultPolicy)
+	fmt.Printf("  Model:      %s\n", cfg.Model)
+	fmt.Printf("  API URL:    %s\n", cfg.API.BaseURL)
+	if cfg.API.Provider != "" {
+		fmt.Printf("  Provider:   %s\n", cfg.API.Provider)
+	}
+	switch keyStorage {
+	case storageVault:
+		fmt.Println("  API key:    **** (encrypted vault)")
+	case storageKeyring:
+		fmt.Println("  API key:    **** (OS keyring)")
+	default:
+		fmt.Println("  API key:    (not set — configure later)")
+	}
+	fmt.Printf("  Language:   %s\n", cfg.Language)
+	fmt.Printf("  Timezone:   %s\n", cfg.Timezone)
+	fmt.Printf("  Groups:     %v\n", cfg.Channels.WhatsApp.RespondToGroups)
+	fmt.Printf("  DMs:        %v\n", cfg.Channels.WhatsApp.RespondToDMs)
+	if len(cfg.Fallback.Models) > 0 {
+		fmt.Printf("  Fallback:   %s\n", strings.Join(cfg.Fallback.Models, " → "))
+	}
+	if cfg.Gateway.Enabled {
+		fmt.Printf("  Gateway:    %s (auth: %v)\n", cfg.Gateway.Address, cfg.Gateway.AuthToken != "")
+	}
+	if cfg.Heartbeat.Enabled {
+		fmt.Printf("  Heartbeat:  every %s, hours %d-%d\n",
+			cfg.Heartbeat.Interval, cfg.Heartbeat.ActiveStart, cfg.Heartbeat.ActiveEnd)
+	}
+	if cfg.Security.ToolGuard.AllowDestructive {
+		fmt.Println("  Destructive: allowed (owner)")
+	}
+	if cfg.Security.ToolGuard.AllowSudo {
+		fmt.Println("  Sudo:       allowed (owner/admin)")
+	}
+	fmt.Printf("  Agent:      max %d turns, %d auto-continues\n", cfg.Agent.MaxTurns, cfg.Agent.MaxContinuations)
+	if cfg.Subagents.Enabled {
+		fmt.Printf("  Subagents:  enabled (max %d concurrent)\n", cfg.Subagents.MaxConcurrent)
+	}
+	fmt.Printf("  Vision:     %v\n", cfg.Media.VisionEnabled)
+	fmt.Printf("  Audio:      %v\n", cfg.Media.TranscriptionEnabled)
+	fmt.Printf("  Log level:  %s\n", cfg.Logging.Level)
+	fmt.Println("─────────────────────────────────────────────")
+	fmt.Println()
+}
+
+// parseInt parses a string as int, returning fallback on failure.
+func parseInt(s string, fallback int) int {
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return fallback
+	}
+	return n
 }
 
 // setupVault creates the encrypted vault and stores the API key in it.
 // Returns the storage method used.
 func setupVault(apiKey string) storageMethod {
 	fmt.Println()
-	fmt.Println("   Creating encrypted vault...")
-	fmt.Println("   Choose a master password (minimum 8 characters).")
-	fmt.Println("   This password is NEVER stored — only you know it.")
+	fmt.Println("  Creating encrypted vault...")
+	fmt.Println("  Choose a master password (minimum 8 characters).")
+	fmt.Println("  This password is NEVER stored — only you know it.")
 	fmt.Println()
 
-	password, err := copilot.ReadPassword("   Master password: ")
+	password, err := copilot.ReadPassword("  Master password: ")
 	if err != nil {
-		fmt.Printf("   [!] Failed to read password: %v\n", err)
+		fmt.Printf("  [!] Failed to read password: %v\n", err)
 		return tryKeyringFallback(apiKey)
 	}
 	if len(password) < 8 {
-		fmt.Println("   [!] Password too short (minimum 8 characters).")
+		fmt.Println("  [!] Password too short (minimum 8 characters).")
 		return tryKeyringFallback(apiKey)
 	}
 
-	confirm, err := copilot.ReadPassword("   Confirm password: ")
+	confirm, err := copilot.ReadPassword("  Confirm password: ")
 	if err != nil || password != confirm {
-		fmt.Println("   [!] Passwords don't match.")
+		fmt.Println("  [!] Passwords don't match.")
 		return tryKeyringFallback(apiKey)
 	}
 
@@ -369,19 +741,19 @@ func setupVault(apiKey string) storageMethod {
 	}
 
 	if err := vault.Create(password); err != nil {
-		fmt.Printf("   [!] Vault creation failed: %v\n", err)
+		fmt.Printf("  [!] Vault creation failed: %v\n", err)
 		return tryKeyringFallback(apiKey)
 	}
 
 	if err := vault.Set("api_key", apiKey); err != nil {
-		fmt.Printf("   [!] Failed to store key in vault: %v\n", err)
+		fmt.Printf("  [!] Failed to store key in vault: %v\n", err)
 		vault.Lock()
 		return tryKeyringFallback(apiKey)
 	}
 
 	vault.Lock()
 	fmt.Println()
-	fmt.Println("   API key encrypted and stored in vault.")
+	fmt.Println("  ✓ API key encrypted and stored in vault.")
 	return storageVault
 }
 
@@ -389,19 +761,13 @@ func setupVault(apiKey string) storageMethod {
 // as a fallback when vault creation fails.
 func tryKeyringFallback(apiKey string) storageMethod {
 	if copilot.KeyringAvailable() {
-		fmt.Println("   Trying OS keyring as fallback...")
+		fmt.Println("  Trying OS keyring as fallback...")
 		if err := copilot.StoreKeyring("api_key", apiKey); err == nil {
-			fmt.Println("   API key stored in OS keyring.")
+			fmt.Println("  API key stored in OS keyring.")
 			return storageKeyring
 		}
 	}
 	return storageNone
-}
-
-// readLine reads a single line from the reader, trimming whitespace.
-func readLine(reader *bufio.Reader) string {
-	line, _ := reader.ReadString('\n')
-	return strings.TrimSpace(line)
 }
 
 // normalizePhone removes common phone number formatting characters.

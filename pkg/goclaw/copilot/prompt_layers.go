@@ -361,19 +361,85 @@ func (p *PromptComposer) buildTemporalLayer() string {
 	)
 }
 
-// buildConversationLayer creates a summary of recent history.
+// buildConversationLayer creates a summary of recent history, using a
+// token-aware sliding window to stay within the history token budget.
 func (p *PromptComposer) buildConversationLayer(session *Session) string {
-	history := session.RecentHistory(p.config.Memory.MaxMessages)
+	// Determine how many entries to request initially.
+	maxEntries := p.config.Memory.MaxMessages
+	if maxEntries <= 0 {
+		maxEntries = 100
+	}
+	// Only include the most recent portion for the prompt.
+	fetchEntries := maxEntries
+	if fetchEntries > 50 {
+		fetchEntries = 50
+	}
+
+	history := session.RecentHistory(fetchEntries)
 	if len(history) == 0 {
 		return ""
+	}
+
+	// Token budget for conversation history layer.
+	historyBudget := p.config.TokenBudget.History
+	if historyBudget <= 0 {
+		historyBudget = 8000
+	}
+
+	// Build from most recent backwards, stopping when we hit the budget.
+	type formattedEntry struct {
+		text   string
+		tokens int
+	}
+	var entries []formattedEntry
+	totalTokens := 0
+
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
+
+		// Truncate very long messages individually.
+		userMsg := entry.UserMessage
+		if len(userMsg) > 2000 {
+			userMsg = userMsg[:2000] + "..."
+		}
+		assistMsg := entry.AssistantResponse
+		if len(assistMsg) > 4000 {
+			assistMsg = assistMsg[:4000] + "..."
+		}
+
+		text := fmt.Sprintf("**User:** %s\n**Assistant:** %s\n", userMsg, assistMsg)
+		tokens := estimateTokens(text)
+
+		// Stop adding if we'd exceed the budget.
+		if totalTokens+tokens > historyBudget && len(entries) > 0 {
+			break
+		}
+
+		entries = append(entries, formattedEntry{text: text, tokens: tokens})
+		totalTokens += tokens
+	}
+
+	if len(entries) == 0 {
+		return ""
+	}
+
+	// Reverse to chronological order (we built backwards).
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
 	}
 
 	var b strings.Builder
 	b.WriteString("## Recent Conversation\n\n")
 
-	for _, entry := range history {
-		b.WriteString(fmt.Sprintf("**User:** %s\n**Assistant:** %s\n\n",
-			entry.UserMessage, entry.AssistantResponse))
+	// If we had to skip older entries, note it.
+	if len(entries) < len(history) {
+		b.WriteString(fmt.Sprintf("_(%d older messages omitted to fit token budget)_\n\n",
+			len(history)-len(entries)))
+	}
+
+	for _, e := range entries {
+		b.WriteString(e.text)
+		b.WriteString("\n")
 	}
 
 	return b.String()
@@ -395,16 +461,112 @@ func (p *PromptComposer) buildRuntimeLayer() string {
 	)
 }
 
-// assembleLayers combines all layers in priority order.
+// estimateTokens approximates the token count for a string.
+// Uses a rough heuristic: ~4 chars per token for English/code, ~2 for CJK.
+func estimateTokens(s string) int {
+	if len(s) == 0 {
+		return 0
+	}
+	// Rough: 1 token ≈ 4 chars (conservative).
+	return (len(s) + 3) / 4
+}
+
+// assembleLayers combines all layers in priority order, trimming lower-priority
+// layers if the total exceeds the configured token budget.
 func (p *PromptComposer) assembleLayers(layers []layerEntry) string {
+	// Sort by priority (lower = higher priority = kept first).
 	sort.Slice(layers, func(i, j int) bool {
 		return layers[i].layer < layers[j].layer
 	})
 
-	var parts []string
+	budget := p.config.TokenBudget.Total
+	if budget <= 0 {
+		budget = 128000 // safe default
+	}
+
+	// System prompt should use at most ~40% of the total budget.
+	// The rest is for conversation messages and tool results.
+	systemBudget := budget * 40 / 100
+
+	// Per-layer budgets (soft limits): use config if > 0, else proportional.
+	layerBudgets := map[PromptLayer]int{
+		LayerCore:         p.config.TokenBudget.System,
+		LayerSafety:       500,  // safety is short and critical
+		LayerIdentity:     1000, // custom instructions
+		LayerThinking:     200,  // thinking hint
+		LayerBootstrap:    4000, // bootstrap files
+		LayerBusiness:     1000, // workspace context
+		LayerSkills:       p.config.TokenBudget.Skills,
+		LayerMemory:       p.config.TokenBudget.Memory,
+		LayerTemporal:     200,  // timestamp
+		LayerConversation: p.config.TokenBudget.History,
+		LayerRuntime:      200,  // runtime line
+	}
+
+	// Phase 1: include all layers, tracking total.
+	type measured struct {
+		entry  layerEntry
+		tokens int
+	}
+	var entries []measured
+	totalTokens := 0
+
 	for _, l := range layers {
-		if l.content != "" {
-			parts = append(parts, l.content)
+		if l.content == "" {
+			continue
+		}
+		tokens := estimateTokens(l.content)
+		entries = append(entries, measured{entry: l, tokens: tokens})
+		totalTokens += tokens
+	}
+
+	// Phase 2: if within budget, return as-is.
+	if totalTokens <= systemBudget {
+		var parts []string
+		for _, m := range entries {
+			parts = append(parts, m.entry.content)
+		}
+		return strings.Join(parts, "\n\n")
+	}
+
+	// Phase 3: trim from lowest priority (highest layer number) first.
+	// Layers with priority < 20 (Core, Safety, Identity, Thinking) are never trimmed.
+	for i := len(entries) - 1; i >= 0 && totalTokens > systemBudget; i-- {
+		m := entries[i]
+		if m.entry.layer < LayerBusiness {
+			continue // never trim core layers
+		}
+
+		// Check per-layer budget.
+		maxTokens := layerBudgets[m.entry.layer]
+		if maxTokens <= 0 {
+			maxTokens = 2000 // default soft limit
+		}
+
+		if m.tokens > maxTokens {
+			// Trim content to fit layer budget.
+			maxChars := maxTokens * 4 // inverse of estimateTokens
+			if maxChars < len(m.entry.content) {
+				trimmed := m.entry.content[:maxChars] + "\n\n... [trimmed to fit token budget]"
+				saved := m.tokens - estimateTokens(trimmed)
+				entries[i].entry.content = trimmed
+				entries[i].tokens = estimateTokens(trimmed)
+				totalTokens -= saved
+			}
+		}
+
+		// If still over budget, drop this layer entirely.
+		if totalTokens > systemBudget && m.entry.layer >= LayerMemory {
+			totalTokens -= entries[i].tokens
+			entries[i].entry.content = ""
+			entries[i].tokens = 0
+		}
+	}
+
+	var parts []string
+	for _, m := range entries {
+		if m.entry.content != "" {
+			parts = append(parts, m.entry.content)
 		}
 	}
 

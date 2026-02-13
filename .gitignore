@@ -1,6 +1,7 @@
 # Binaries
 /bin/
 /dist/
+/copilot
 *.exe
 *.exe~
 *.dll
@@ -29,10 +30,18 @@ Thumbs.db
 /data/
 /sessions/
 /memory/
-MEMORY.md
 *.db
 *.db-shm
 *.db-wal
+
+# Bootstrap files (personalized copies in root — templates live in configs/bootstrap/)
+/SOUL.md
+/AGENTS.md
+/IDENTITY.md
+/USER.md
+/TOOLS.md
+/HEARTBEAT.md
+/MEMORY.md
 
 # Config with secrets
 config.yaml

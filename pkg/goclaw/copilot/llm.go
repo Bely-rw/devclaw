@@ -28,6 +28,7 @@ type StreamCallback func(chunk string)
 // LLMClient handles communication with the LLM provider API.
 type LLMClient struct {
 	baseURL    string
+	provider   string // "openai", "zai", "zai-coding", "zai-anthropic", "anthropic", ""
 	apiKey     string
 	model      string
 	fallback   FallbackConfig
@@ -43,16 +44,56 @@ func NewLLMClient(cfg *Config, logger *slog.Logger) *LLMClient {
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 
+	provider := cfg.API.Provider
+	if provider == "" {
+		provider = detectProvider(baseURL)
+	}
+
 	return &LLMClient{
-		baseURL: baseURL,
-		apiKey:  cfg.API.APIKey,
-		model:   cfg.Model,
+		baseURL:  baseURL,
+		provider: provider,
+		apiKey:   cfg.API.APIKey,
+		model:    cfg.Model,
 		fallback: cfg.Fallback.Effective(),
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
-		logger: logger.With("component", "llm"),
+		logger: logger.With("component", "llm", "provider", provider),
 	}
+}
+
+// detectProvider infers the provider from the base URL.
+func detectProvider(baseURL string) string {
+	switch {
+	case strings.Contains(baseURL, "z.ai/api/coding"):
+		return "zai-coding"
+	case strings.Contains(baseURL, "z.ai/api/paas"):
+		return "zai"
+	case strings.Contains(baseURL, "z.ai/api/anthropic"):
+		return "zai-anthropic"
+	case strings.Contains(baseURL, "anthropic.com"):
+		return "anthropic"
+	case strings.Contains(baseURL, "openai.com"):
+		return "openai"
+	default:
+		return "openai" // assume OpenAI-compatible
+	}
+}
+
+// chatEndpoint returns the chat completions URL for the configured provider.
+func (c *LLMClient) chatEndpoint() string {
+	return c.baseURL + "/chat/completions"
+}
+
+// audioEndpoint returns the audio transcriptions URL.
+// Z.AI has audio at the same base path; OpenAI uses /audio/transcriptions.
+func (c *LLMClient) audioEndpoint() string {
+	return c.baseURL + "/audio/transcriptions"
+}
+
+// Provider returns the detected or configured provider name.
+func (c *LLMClient) Provider() string {
+	return c.provider
 }
 
 // ---------- Wire Types (OpenAI-compatible) ----------
@@ -71,22 +112,156 @@ type imageURL struct {
 	Detail string `json:"detail,omitempty"` // "auto", "low", "high"
 }
 
+// cacheControl marks a message or content block as cacheable (Anthropic prompt caching).
+type cacheControl struct {
+	Type string `json:"type"` // "ephemeral"
+}
+
 // chatMessage represents a message in the OpenAI chat format.
 // Supports user, system, assistant (with optional tool_calls), and tool result messages.
 // Content is either a string (text-only) or []contentPart (multimodal, e.g. image+text).
 type chatMessage struct {
-	Role       string     `json:"role"`
-	Content    any        `json:"content"` // string or []contentPart
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role         string        `json:"role"`
+	Content      any           `json:"content"` // string or []contentPart
+	ToolCalls    []ToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID   string        `json:"tool_call_id,omitempty"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"` // Anthropic prompt caching
 }
 
 // chatRequest is the OpenAI-compatible chat completions request.
 type chatRequest struct {
-	Model    string           `json:"model"`
-	Messages []chatMessage    `json:"messages"`
-	Tools    []ToolDefinition `json:"tools,omitempty"`
-	Stream   bool             `json:"stream,omitempty"`
+	Model       string           `json:"model"`
+	Messages    []chatMessage    `json:"messages"`
+	Tools       []ToolDefinition `json:"tools,omitempty"`
+	Stream      bool             `json:"stream,omitempty"`
+	Temperature *float64         `json:"temperature,omitempty"`
+	MaxTokens   *int             `json:"max_tokens,omitempty"`
+}
+
+// modelDefaults holds per-model/provider behavior overrides.
+type modelDefaults struct {
+	// SupportsTemperature indicates if the model accepts the temperature param.
+	SupportsTemperature bool
+	// DefaultTemperature is the default temperature to use (0 = omit).
+	DefaultTemperature float64
+	// MaxOutputTokens is the default max_tokens for output (0 = omit / let server decide).
+	MaxOutputTokens int
+	// SupportsTools indicates if the model supports function/tool calling.
+	SupportsTools bool
+}
+
+// getModelDefaults returns the known defaults for a given model and provider.
+func getModelDefaults(model, provider string) modelDefaults {
+	// Default: supports everything (OpenAI-compatible baseline).
+	d := modelDefaults{
+		SupportsTemperature: true,
+		DefaultTemperature:  0.7,
+		MaxOutputTokens:     0, // let server decide
+		SupportsTools:       true,
+	}
+
+	switch {
+	// ── OpenAI models ──
+	case strings.HasPrefix(model, "gpt-5"):
+		d.DefaultTemperature = 0.7
+		d.MaxOutputTokens = 16384
+	case strings.HasPrefix(model, "gpt-4o"):
+		d.DefaultTemperature = 0.7
+		d.MaxOutputTokens = 16384
+	case strings.HasPrefix(model, "gpt-4.5"):
+		d.DefaultTemperature = 0.7
+		d.MaxOutputTokens = 16384
+
+	// ── Anthropic models ──
+	case strings.HasPrefix(model, "claude-opus-4"):
+		d.DefaultTemperature = 1.0
+		d.MaxOutputTokens = 16384
+	case strings.HasPrefix(model, "claude-sonnet-4"):
+		d.DefaultTemperature = 1.0
+		d.MaxOutputTokens = 16384
+	case strings.HasPrefix(model, "claude-3"):
+		d.DefaultTemperature = 1.0
+		d.MaxOutputTokens = 4096
+
+	// ── GLM models (Z.AI) ──
+	case strings.HasPrefix(model, "glm-5"):
+		d.DefaultTemperature = 0.7
+		d.MaxOutputTokens = 8192
+	case strings.HasPrefix(model, "glm-4"):
+		d.DefaultTemperature = 0.7
+		d.MaxOutputTokens = 4096
+	}
+
+	// Provider-level overrides: Z.AI Anthropic proxy passes through to Anthropic.
+	if provider == "zai-anthropic" {
+		d.DefaultTemperature = 1.0
+	}
+
+	return d
+}
+
+// applyModelDefaults populates a chatRequest with model-specific defaults.
+func (c *LLMClient) applyModelDefaults(req *chatRequest) {
+	d := getModelDefaults(req.Model, c.provider)
+
+	if d.SupportsTemperature && d.DefaultTemperature > 0 && req.Temperature == nil {
+		t := d.DefaultTemperature
+		req.Temperature = &t
+	}
+	if d.MaxOutputTokens > 0 && req.MaxTokens == nil {
+		req.MaxTokens = &d.MaxOutputTokens
+	}
+	// Strip tools if the model doesn't support them.
+	if !d.SupportsTools {
+		req.Tools = nil
+	}
+
+	// Prompt caching: mark system messages with cache_control for supported providers.
+	// Anthropic and Z.AI (anthropic proxy) support prompt caching via cache_control.
+	if c.supportsCacheControl() {
+		c.applyPromptCaching(req)
+	}
+}
+
+// supportsCacheControl returns true if the provider supports prompt caching.
+func (c *LLMClient) supportsCacheControl() bool {
+	switch c.provider {
+	case "anthropic", "zai-anthropic":
+		return true
+	default:
+		return false
+	}
+}
+
+// applyPromptCaching marks the system message and last user message with
+// cache_control for providers that support prompt caching. This allows the
+// provider to cache the system prompt across requests, reducing costs by up to
+// 90% for repeated conversations with the same system prompt.
+func (c *LLMClient) applyPromptCaching(req *chatRequest) {
+	if len(req.Messages) == 0 {
+		return
+	}
+
+	// Mark the system message as cacheable (it rarely changes).
+	for i := range req.Messages {
+		if req.Messages[i].Role == "system" {
+			req.Messages[i].CacheControl = &cacheControl{Type: "ephemeral"}
+			break
+		}
+	}
+
+	// Mark the last user message as a cache breakpoint.
+	// This creates a two-tier cache: stable system prompt + recent conversation prefix.
+	userCount := 0
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			userCount++
+			if userCount == 2 { // second-to-last user message = good breakpoint
+				req.Messages[i].CacheControl = &cacheControl{Type: "ephemeral"}
+				break
+			}
+		}
+	}
 }
 
 // streamChoice represents a single choice in a streaming chunk.
@@ -343,7 +518,7 @@ func (c *LLMClient) TranscribeAudio(ctx context.Context, audioData []byte, filen
 		return "", fmt.Errorf("closing multipart writer: %w", err)
 	}
 
-	endpoint := c.baseURL + "/audio/transcriptions"
+	endpoint := c.audioEndpoint()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &buf)
 	if err != nil {
 		return "", fmt.Errorf("creating request: %w", err)
@@ -409,13 +584,14 @@ func (c *LLMClient) completeOnce(ctx context.Context, model string, messages []c
 	if len(tools) > 0 {
 		reqBody.Tools = tools
 	}
+	c.applyModelDefaults(&reqBody)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	endpoint := c.baseURL + "/chat/completions"
+	endpoint := c.chatEndpoint()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -568,13 +744,14 @@ func (c *LLMClient) completeOnceStream(ctx context.Context, model string, messag
 	if len(tools) > 0 {
 		reqBody.Tools = tools
 	}
+	c.applyModelDefaults(&reqBody)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	endpoint := c.baseURL + "/chat/completions"
+	endpoint := c.chatEndpoint()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)

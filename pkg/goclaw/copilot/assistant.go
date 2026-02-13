@@ -779,9 +779,27 @@ func (a *Assistant) maybeCompactSession(session *Session) {
 	if threshold <= 0 {
 		threshold = 100
 	}
-	if session.HistoryLen() < threshold {
+
+	histLen := session.HistoryLen()
+
+	// Preventive compaction: start at 80% of threshold to avoid hitting
+	// the hard limit during active conversation.
+	preventiveThreshold := threshold * 80 / 100
+	if preventiveThreshold < 10 {
+		preventiveThreshold = 10
+	}
+
+	if histLen < preventiveThreshold {
 		return
 	}
+
+	a.logger.Info("preventive compaction triggered",
+		"session", session.ID,
+		"history_len", histLen,
+		"threshold", threshold,
+		"preventive_at", preventiveThreshold,
+	)
+
 	a.doCompactSession(session)
 }
 
@@ -796,14 +814,43 @@ func (a *Assistant) forceCompactSession(session *Session) (oldLen, newLen int) {
 	return oldLen, session.HistoryLen()
 }
 
-// doCompactSession performs the actual compaction (memory flush + summarize + compact).
+// doCompactSession performs compaction using the configured CompressionStrategy.
+//
+// Strategies:
+//   - "summarize" (default): LLM summarizes old history → single summary entry + recent.
+//   - "truncate": simply drops the oldest entries, keeping the most recent.
+//   - "sliding": keeps a fixed window of the N most recent entries (no summary).
 func (a *Assistant) doCompactSession(session *Session) {
+	strategy := a.config.Memory.CompressionStrategy
+	if strategy == "" {
+		strategy = "summarize"
+	}
+
 	a.logger.Info("session compaction",
 		"session", session.ID,
+		"strategy", strategy,
 		"history_len", session.HistoryLen(),
 	)
 
-	// Step 1: Memory flush — ask the agent to extract important facts.
+	threshold := a.config.Memory.MaxMessages
+	if threshold <= 0 {
+		threshold = 100
+	}
+
+	switch strategy {
+	case "truncate":
+		a.compactTruncate(session, threshold)
+	case "sliding":
+		a.compactSliding(session, threshold)
+	default: // "summarize"
+		a.compactSummarize(session, threshold)
+	}
+}
+
+// compactSummarize uses the LLM to generate a summary of older conversation
+// and replaces old entries with the summary, keeping recent entries.
+func (a *Assistant) compactSummarize(session *Session, threshold int) {
+	// Step 1: Memory flush — extract important facts before discarding.
 	if a.memoryStore != nil {
 		flushPrompt := "Extract the most important facts, preferences, and information from this conversation that should be remembered long-term. Save them using the memory_save tool. If nothing important, reply with NO_REPLY."
 
@@ -821,19 +868,15 @@ func (a *Assistant) doCompactSession(session *Session) {
 		}
 	}
 
-	// Step 2: Ask the LLM to summarize the old history.
+	// Step 2: LLM summarizes the conversation.
 	summaryPrompt := "Summarize the key points of this conversation in 2-3 sentences. Focus on decisions made, tasks completed, and important context."
 	summary, err := a.llmClient.Complete(a.ctx, "", session.RecentHistory(20), summaryPrompt)
 	if err != nil {
 		summary = "Previous conversation context was compacted."
 	}
 
-	// Step 3: Compact the session.
-	threshold := a.config.Memory.MaxMessages
-	if threshold <= 0 {
-		threshold = 100
-	}
-	keepRecent := threshold / 4 // Keep 25% of the threshold as recent history.
+	// Step 3: Keep 25% of threshold as recent history.
+	keepRecent := threshold / 4
 	if keepRecent < 5 {
 		keepRecent = 5
 	}
@@ -850,7 +893,41 @@ func (a *Assistant) doCompactSession(session *Session) {
 		_ = a.memoryStore.SaveDailyLog(time.Now(), logContent.String())
 	}
 
-	a.logger.Info("session compacted",
+	a.logger.Info("session compacted (summarize)",
+		"session", session.ID,
+		"entries_removed", len(oldEntries),
+		"new_history_len", session.HistoryLen(),
+	)
+}
+
+// compactTruncate simply drops the oldest entries, keeping the N most recent.
+// No LLM call needed — fast and cost-free.
+func (a *Assistant) compactTruncate(session *Session, threshold int) {
+	keepRecent := threshold / 2
+	if keepRecent < 10 {
+		keepRecent = 10
+	}
+
+	oldEntries := session.CompactHistory("", keepRecent)
+
+	a.logger.Info("session compacted (truncate)",
+		"session", session.ID,
+		"entries_removed", len(oldEntries),
+		"new_history_len", session.HistoryLen(),
+	)
+}
+
+// compactSliding keeps a fixed sliding window of the most recent entries.
+// Drops everything outside the window — no summary, no LLM call.
+func (a *Assistant) compactSliding(session *Session, threshold int) {
+	windowSize := threshold / 2
+	if windowSize < 10 {
+		windowSize = 10
+	}
+
+	oldEntries := session.CompactHistory("", windowSize)
+
+	a.logger.Info("session compacted (sliding)",
 		"session", session.ID,
 		"entries_removed", len(oldEntries),
 		"new_history_len", session.HistoryLen(),

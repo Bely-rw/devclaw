@@ -1,425 +1,494 @@
 # GoClaw
 
-**AI assistant. Any OS.**
-
-Open-source personal AI assistant framework in Go. Single binary, zero runtime dependencies, cross-compilable to Linux, macOS, Windows, ARM, and anything Go targets. CLI + messaging channels (WhatsApp, Discord, Telegram). Built on the [AgentGo](https://github.com/jholhewres/agent-go) SDK.
-
-## About
-
-GoClaw is heavily inspired by [OpenClaw](https://github.com/openclaw/openclaw) — a project that truly revolutionized what personal AI assistants can be. OpenClaw pioneered the concept of an extensible agent with community-driven skills, layered prompts, and multi-channel support. It demonstrated that an AI assistant is more than just a chatbot: it's a platform where skills, tools, and integrations compose together to create something genuinely useful in daily life.
-
-GoClaw takes that same vision and brings it to Go: a single compiled binary with native WhatsApp support, a plugin system for channels, and a multi-tenant workspace architecture — all while keeping OpenClaw's skill ecosystem accessible through a compatibility layer.
-
-## Why Go, and Why Security Matters
-
-One core concern drove the design of GoClaw: **security in an open-source skill ecosystem**.
-
-OpenClaw's community skill repository has 900+ skills contributed by hundreds of developers. That's incredible — but it also means no single maintainer can audit, verify, and keep up with every script that runs inside the assistant. A malicious or poorly written skill could access your files, exfiltrate data, mine crypto, or open reverse shells.
-
-Creating, maintaining, and verifying that many skills is simply not feasible at scale. So instead of trying to trust every skill, **why not create a secure environment to execute them?**
-
-That's the approach GoClaw takes:
-
-- **Native Go skills** are compiled into the binary — fast, type-safe, and auditable
-- **Community scripts** (Python, Node.js, Shell) run inside a **multi-level sandbox** with Linux namespace isolation or Docker containers
-- **Environment filtering** blocks injection vectors (`LD_PRELOAD`, `NODE_OPTIONS`, `PYTHONPATH`, etc.)
-- **Content scanning** detects `eval()`, reverse shells, crypto mining, and obfuscated code *before* execution
-- **Network isolation** is the default — scripts can't phone home unless explicitly allowed
-
-The result: you get access to the entire OpenClaw skill ecosystem, but every external script runs in a controlled, resource-limited environment. Trust the ecosystem, verify the execution.
+Open-source AI assistant framework in Go. Single binary, zero runtime dependencies. Supports CLI and messaging channels (WhatsApp, Discord, Telegram). Full filesystem access, tool use, subagents, encrypted vault, and sandboxed skill execution.
 
 ## Quick Start
 
 ```bash
-# Build from source
-git clone https://github.com/jholhewres/goclaw.git
-cd goclaw
+git clone https://github.com/jholhewres/goclaw.git && cd goclaw
 make build
-
-# Interactive setup wizard (config + encrypted vault)
-./bin/copilot setup
-
-# Start (scan QR code on first run)
-make run
+./bin/copilot setup   # interactive wizard (arrow keys, model selection, vault)
+make run              # build + serve
 ```
-
-The setup wizard guides you through all configuration: assistant name, phone number, access policy, API key (encrypted), model selection, language, and WhatsApp settings.
 
 Or install directly:
 
 ```bash
 go install github.com/jholhewres/goclaw/cmd/copilot@latest
-copilot setup
-copilot serve
-```
-
-### CLI Chat
-
-Talk to the assistant directly from the terminal — same agent loop, tools, and skills as WhatsApp:
-
-```bash
-copilot chat                           # Interactive REPL
-copilot chat "What time is it in SP?"  # Single message
-```
-
-## Access Control
-
-GoClaw does **not** respond to everyone. Only explicitly authorized contacts can interact with the assistant — just like OpenClaw.
-
-```yaml
-# config.yaml
-access:
-  default_policy: deny              # deny | allow | ask
-  owners:
-    - "5511999999999"               # Your phone number (full control)
-  admins:
-    - "5511888888888"               # Can manage users + workspaces
-  allowed_users:
-    - "5511777777777"               # Can interact with the bot
-  allowed_groups:
-    - "120363000000000000@g.us"     # Group JIDs
-```
-
-| Policy | Behavior |
-|--------|----------|
-| `deny` | Silently ignores unknown contacts (default, recommended) |
-| `allow` | Responds to everyone except blocked contacts |
-| `ask` | Sends a one-time "access not authorized" message |
-
-Access levels: **owner** > **admin** > **user** > **blocked**.
-
-Owners and admins can manage access in real time via chat commands:
-
-```
-/allow 5511777777777        Grant access
-/block 5511666666666        Block a contact
-/admin 5511888888888        Promote to admin
-/users                      List all authorized users
-/group allow                Allow the current group
-/status                     Bot status
-/help                       All commands
-```
-
-## Workspaces
-
-Multiple people can use the same WhatsApp number with **completely isolated contexts**. Each workspace has its own system prompt, skills, LLM model, language, and conversation memory.
-
-```yaml
-workspaces:
-  default_workspace: "default"
-  workspaces:
-    - id: "default"
-      name: "Default"
-      active: true
-
-    - id: "personal"
-      name: "Personal Assistant"
-      instructions: |
-        You are my personal assistant. Help with daily tasks,
-        reminders, and planning. Be proactive.
-      model: "gpt-4o"
-      language: "pt-BR"
-      skills: [weather, web-search, gog]
-      members: ["5511999999999"]
-
-    - id: "work"
-      name: "Dev Team"
-      instructions: |
-        You are a technical assistant for our development team.
-        Help with code reviews, architecture, and documentation.
-      model: "gpt-4o-mini"
-      language: "en"
-      skills: [github, web-search, summarize]
-      members: ["5511888888888", "5511777777777"]
-      groups: ["120363000000000000@g.us"]
-```
-
-Managed via chat:
-
-```
-/ws create personal "My Assistant"
-/ws assign 5511999999999 personal
-/ws list
-/ws info personal
+copilot setup && copilot serve
 ```
 
 ## Architecture
 
-GoClaw has three layers of extensibility: **Core**, **Plugins**, and **Skills**.
-
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                           GoClaw                             │
-├──────────────────────────────────────────────────────────────┤
-│  CLI (cmd/copilot/)                                          │
-│  chat · serve · schedule · skill · config · remember · health│
-├───────────────┬──────────────────┬───────────────────────────┤
-│  Core         │  Plugins (.so)   │  Skills (separate repo)   │
-│  Compiled in  │  Loaded at       │  Installed via CLI         │
-│  the binary   │  runtime         │  from goclaw-skills        │
-│               │                  │                            │
-│  ▸ WhatsApp   │  ▸ Extra         │  ▸ Prompt / Soul           │
-│  ▸ Access     │    channels      │  ▸ Tools for the agent     │
-│  ▸ Workspaces │  ▸ Webhooks      │  ▸ Triggers                │
-│  ▸ Guardrails │  ▸ Custom        │  ▸ Config schema           │
-│  ▸ Sessions   │    integrations  │  ▸ System prompt inject    │
-│  ▸ Scheduler  │                  │                            │
-│  ▸ Sandbox    │                  │                            │
-├───────────────┴──────────────────┴───────────────────────────┤
-│  AgentGo SDK (github.com/jholhewres/agent-go)                │
-│  Agent · Models · Tools · Memory · Hooks · Guardrails        │
-└──────────────────────────────────────────────────────────────┘
+goclaw/
+├── cmd/copilot/commands/     CLI (cobra): setup, serve, chat, config, skill, schedule, health
+├── pkg/goclaw/
+│   ├── copilot/              Core assistant orchestrator
+│   │   ├── assistant.go      Message flow, agent dispatch, compaction, media enrichment
+│   │   ├── agent.go          Agent loop (multi-turn tool calling, auto-continue, reflection)
+│   │   ├── llm.go            LLM client (OpenAI-compatible, streaming, fallback, prompt caching)
+│   │   ├── prompt_layers.go  8-layer prompt composer with token budget trimming
+│   │   ├── session.go        Per-chat session isolation with persistence
+│   │   ├── session_persist.go JSONL session persistence to disk
+│   │   ├── tool_executor.go  Tool registry, dispatch, parallel execution
+│   │   ├── tool_guard.go     Access control, dangerous command blocking, audit log
+│   │   ├── exec_approval.go  Interactive tool approval via chat
+│   │   ├── system_tools.go   Built-in tools (file I/O, bash, ssh, web, memory, cron)
+│   │   ├── media_tools.go    Vision (image description) and audio transcription (Whisper)
+│   │   ├── subagent.go       Subagent spawning and orchestration
+│   │   ├── skill_creator.go  Create/edit skills via chat
+│   │   ├── vault.go          Encrypted vault (AES-256-GCM + Argon2id)
+│   │   ├── keyring.go        OS keyring + secret resolution chain
+│   │   ├── heartbeat.go      Proactive scheduled agent behavior
+│   │   ├── config_watcher.go Config hot-reload (mtime + SHA256)
+│   │   ├── message_queue.go  Per-session debounce, dedup, burst handling
+│   │   ├── message_split.go  Channel-aware message splitting (preserves code blocks)
+│   │   ├── markdown.go       WhatsApp-specific markdown formatting
+│   │   ├── usage_tracker.go  Token/cost tracking per session and global
+│   │   ├── access.go         Per-user/group allowlist, blocklist, roles
+│   │   ├── workspace.go      Multi-tenant workspace isolation
+│   │   ├── memory/           Persistent memory (MEMORY.md, daily logs, fact search)
+│   │   └── security/         SSRF guard for web_fetch
+│   ├── channels/             Channel interface + manager
+│   │   └── whatsapp/         Native Go WhatsApp (whatsmeow)
+│   ├── gateway/              HTTP API gateway (OpenAI-compatible)
+│   ├── plugins/              Go native plugin loader (.so)
+│   ├── sandbox/              Script sandbox (namespaces / Docker)
+│   ├── scheduler/            Cron scheduler with file persistence
+│   └── skills/               Skill system, ClawHub client, builtin adapter
+├── skills/                   Submodule → goclaw-skills repository
+├── configs/
+│   ├── bootstrap/            Template bootstrap files (SOUL.md, AGENTS.md, etc.)
+│   └── copilot.example.yaml  Full config reference
+├── Makefile
+├── Dockerfile
+├── docker-compose.yml
+└── copilot.service           systemd unit
 ```
 
-- **Core** = what GoClaw needs to run. WhatsApp, access control, workspaces, guardrails, sandbox — security is not optional.
-- **Plugins** = runtime extensions via Go's native plugin system (`.so`). Add channels, webhooks, or integrations without recompiling.
-- **Skills** = what the *agent* can do. A skill teaches the LLM new capabilities through prompt instructions, tools, and triggers. Skills live in a separate repository.
+## LLM Client
 
-## Connecting to AgentGo SDK
-
-GoClaw uses the [AgentGo SDK](https://github.com/jholhewres/agent-go) for agent execution, LLM models, tools, and memory.
-
-```go
-import (
-    "github.com/jholhewres/agent-go/pkg/agentgo/agent"
-    "github.com/jholhewres/agent-go/pkg/agentgo/models/openai"
-)
-
-model, _ := openai.New("gpt-4o-mini", openai.Config{
-    APIKey: os.Getenv("OPENAI_API_KEY"),
-})
-
-ag, _ := agent.New(agent.Config{
-    Name:         "Copilot",
-    Model:        model,
-    Instructions: "You are a helpful assistant.",
-})
-
-output, _ := ag.Run(context.Background(), "What's on my calendar?")
-```
+OpenAI-compatible HTTP client with provider-specific optimizations.
 
 ### Supported Providers
 
-| Provider | Import | Example model |
-|----------|--------|---------------|
-| OpenAI | `models/openai` | `gpt-4o-mini`, `gpt-4o` |
-| Anthropic | `models/anthropic` | `claude-3-5-sonnet-20241022` |
-| Google Gemini | `models/gemini` | `gemini-1.5-pro` |
-| Ollama (local) | `models/ollama` | `llama2`, `mistral` |
-| DeepSeek | `models/deepseek` | `deepseek-chat` |
-| Groq | `models/groq` | `llama-3.1-70b-versatile` |
-| Together | `models/together` | `meta-llama/Llama-3-70b` |
-| OpenRouter | `models/openrouter` | Any model |
-| LM Studio | `models/lmstudio` | Local models |
+| Provider | Base URL | Provider Key |
+|----------|----------|--------------|
+| OpenAI | `https://api.openai.com/v1` | `openai` |
+| Z.AI (API) | `https://api.z.ai/api/paas/v4` | `zai` |
+| Z.AI (Coding) | `https://api.z.ai/api/coding/paas/v4` | `zai-coding` |
+| Z.AI (Anthropic proxy) | `https://api.z.ai/api/anthropic` | `zai-anthropic` |
+| Anthropic | `https://api.anthropic.com/v1` | `anthropic` |
+| Any OpenAI-compatible | Custom URL | auto-detected |
+
+Provider is auto-detected from the base URL or set explicitly in config.
+
+### Model Defaults
+
+Each model gets provider-specific defaults applied automatically:
+
+| Model | Temperature | Max Output Tokens | Tools |
+|-------|-------------|-------------------|-------|
+| `gpt-5`, `gpt-5-mini` | 0.7 | 16384 | Yes |
+| `gpt-4o`, `gpt-4o-mini` | 0.7 | 16384 | Yes |
+| `gpt-4.5-preview` | 0.7 | 16384 | Yes |
+| `claude-opus-4.6`, `claude-opus-4.5` | 1.0 | 16384 | Yes |
+| `claude-sonnet-4.5` | 1.0 | 16384 | Yes |
+| `glm-5` | 0.7 | 8192 | Yes |
+| `glm-4.7`, `glm-4.7-flash` | 0.7 | 4096 | Yes |
+
+### Model Fallback
+
+On API failure, the client retries with exponential backoff and falls back to alternative models:
+
+```yaml
+fallback:
+  models: [gpt-4o, glm-4.7-flash, claude-sonnet-4.5]
+  max_retries: 2
+  initial_backoff_ms: 1000
+  max_backoff_ms: 30000
+  retry_on_status_codes: [429, 500, 502, 503, 529]
+```
+
+Errors are classified as `Retryable`, `Auth`, `Context`, `BadRequest`, or `Fatal`. Only retryable errors trigger the fallback chain. `Retry-After` headers are respected.
+
+### Streaming
+
+Server-Sent Events (SSE) streaming via `CompleteWithToolsStream`. Parses `data: [DONE]` terminator. Falls back to non-streaming if the provider doesn't support it.
+
+### Prompt Caching
+
+For Anthropic and Z.AI Anthropic proxy, `cache_control: {"type": "ephemeral"}` is automatically added to the system message and the second-to-last user message. This enables prompt caching, reducing costs by up to 90% for conversations with the same system prompt.
+
+## Agent Loop
+
+The agent iterates: call LLM → if tool_calls → execute tools → append results → call LLM again, until a final text response or the turn limit.
+
+| Parameter | Default | Config Key |
+|-----------|---------|------------|
+| Max turns per request | 25 | `agent.max_turns` |
+| Turn timeout | 90s | `agent.turn_timeout_seconds` |
+| Auto-continuations | 2 | `agent.max_continuations` |
+| Reflection interval | every 8 turns | — |
+| Max compaction attempts | 3 | `agent.max_compaction_attempts` |
+
+**Auto-continue**: when the agent exhausts its turn budget while still calling tools, it automatically starts a continuation run (up to `max_continuations` times).
+
+**Reflection**: every 8 turns, a `[System: N turns used of M]` nudge is injected so the agent can self-manage its budget.
+
+**Context overflow handling**: if the LLM returns `context_length_exceeded`, the agent automatically compacts messages (keeping system + recent history), truncates tool results to 2000 chars, and retries up to `max_compaction_attempts` times.
+
+## Prompt Composer
+
+8-layer system prompt with priority-based token budget trimming.
+
+| Layer | Priority | Content | Budget Source |
+|-------|----------|---------|---------------|
+| Core | 0 | Base identity, tooling guidance | `token_budget.system` |
+| Safety | 5 | Guardrails, boundaries | 500 tokens |
+| Identity | 10 | Custom instructions from config | 1000 tokens |
+| Thinking | 12 | Extended thinking hints (`/think`) | 200 tokens |
+| Bootstrap | 15 | SOUL.md, AGENTS.md, IDENTITY.md, USER.md, TOOLS.md | 4000 tokens |
+| Business | 20 | Workspace context | 1000 tokens |
+| Skills | 40 | Active skill instructions | `token_budget.skills` |
+| Memory | 50 | Long-term facts, session facts | `token_budget.memory` |
+| Temporal | 60 | Current date/time/timezone | 200 tokens |
+| Conversation | 70 | Recent history (sliding window) | `token_budget.history` |
+| Runtime | 80 | System info (OS, host, model, cwd) | 200 tokens |
+
+**Token budget trimming**: the system prompt uses at most 40% of the total token budget. When exceeded, layers are trimmed from lowest priority first. Layers with priority < 20 (Core, Safety, Identity, Thinking) are never trimmed. Layers at priority >= 50 can be dropped entirely if over budget.
+
+**Conversation sliding window**: history is built backwards from most recent, stopping when the history token budget is reached. Individual messages are truncated (user: 2000 chars, assistant: 4000 chars). Older messages are omitted with a count indicator.
+
+### Bootstrap Files
+
+Template files in `configs/bootstrap/` are loaded from the workspace root at runtime. Copy to project root and customize:
+
+| File | Purpose |
+|------|---------|
+| `SOUL.md` | Agent persona, tone, boundaries |
+| `AGENTS.md` | Operating rules, memory protocol, session behavior |
+| `IDENTITY.md` | Self-assigned identity (filled by agent) |
+| `USER.md` | User profile (learned over time) |
+| `TOOLS.md` | Environment-specific notes (SSH hosts, API endpoints) |
+| `HEARTBEAT.md` | Periodic tasks for the heartbeat system |
+
+## Tools
+
+### Built-in Tools
+
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read any file on the filesystem |
+| `write_file` | Write/create files anywhere |
+| `edit_file` | Precise line-based edits (search & replace) |
+| `list_files` | List directory contents with metadata |
+| `search_files` | Regex search across files (ripgrep-style) |
+| `glob_files` | Find files by glob pattern |
+| `bash` | Execute shell commands with persistent cwd and env |
+| `set_env` | Set persistent environment variables for bash |
+| `ssh` | Execute commands on remote machines |
+| `scp` | Copy files to/from remote machines |
+| `web_search` | DuckDuckGo search (HTML parsing, SSRF-protected) |
+| `web_fetch` | Fetch URL content (SSRF-protected) |
+| `memory_save` | Save facts to long-term memory |
+| `memory_search` | Search memory by keyword |
+| `memory_list` | List recent memory entries |
+| `schedule_add` | Add cron task |
+| `schedule_list` | List scheduled tasks |
+| `schedule_remove` | Remove a scheduled task |
+| `describe_image` | Vision: describe image content via LLM |
+| `transcribe_audio` | Audio transcription via Whisper API |
+| `init_skill` | Create a new skill scaffold |
+| `edit_skill` | Modify skill files |
+| `add_script` | Add script to a skill |
+| `list_skills` | List installed skills |
+| `test_skill` | Test a skill |
+| `install_skill` | Install from ClawHub, GitHub, URL, or local path |
+| `search_skills` | Search ClawHub catalog |
+| `remove_skill` | Uninstall a skill |
+| `spawn_subagent` | Create a child agent for parallel work |
+| `list_subagents` | List active subagents |
+| `wait_subagent` | Wait for subagent completion |
+| `stop_subagent` | Terminate a subagent |
+
+### Tool Guard
+
+Fine-grained security layer for all tool executions.
+
+```yaml
+security:
+  tool_guard:
+    enabled: true
+    audit_log: ./data/audit.log
+    allow_destructive: false    # rm -rf, mkfs, dd — blocked by default
+    allow_sudo: false           # sudo blocked for non-owners
+    allow_reboot: false         # shutdown/reboot blocked
+    require_confirmation: [bash, ssh, scp, write_file]
+    auto_approve: []
+    dangerous_commands:          # additional regex patterns
+      - "curl.*\\|.*sh"
+    protected_paths:
+      - /etc/shadow
+      - ~/.ssh/id_*
+    ssh_allowed_hosts: []       # empty = all allowed
+    tool_permissions:
+      bash: owner
+      ssh: owner
+      scp: admin
+```
+
+**Audit logging**: every tool execution (allowed or blocked) is logged to the audit log with timestamp, user, tool name, arguments, and result.
+
+**Interactive approval**: tools in `require_confirmation` trigger a chat message asking the user to `/approve <id>` or `/deny <id>` before execution.
+
+### Parallel Tool Execution
+
+Independent tools run concurrently with a configurable semaphore:
+
+```yaml
+security:
+  tool_executor:
+    parallel: true
+    max_parallel: 5
+```
+
+Stateful tools (`bash`) always run sequentially.
+
+## Session Management
+
+### Isolation
+
+Each chat/group gets an independent session with its own history, facts, active skills, and config overrides. Sessions are thread-safe (`sync.RWMutex`).
+
+### Persistence
+
+Sessions are persisted to disk as JSONL (one entry per line). Facts and metadata are stored as separate JSON files. Sessions survive restarts.
+
+```
+data/sessions/
+├── whatsapp_5511999999999/
+│   ├── history.jsonl     # conversation entries
+│   ├── facts.json        # extracted facts
+│   └── meta.json         # session metadata
+```
+
+### Compaction
+
+Three compression strategies, configurable via `memory.compression_strategy`:
+
+| Strategy | Method | LLM Cost | Speed |
+|----------|--------|----------|-------|
+| `summarize` (default) | Memory flush → LLM summarization → keep 25% recent | High | Slow |
+| `truncate` | Drop oldest entries, keep 50% recent | Zero | Instant |
+| `sliding` | Fixed window of most recent entries | Zero | Instant |
+
+**Preventive compaction**: triggers at 80% of `memory.max_messages` threshold (not 100%), avoiding mid-conversation overflow.
+
+## Subagent System
+
+The main agent can spawn child agents for parallel work.
+
+```yaml
+subagents:
+  enabled: true
+  max_concurrent: 3
+  max_turns: 15
+  timeout_seconds: 300
+  denied_tools: [spawn_subagent, list_subagents, wait_subagent]
+```
+
+Subagents get a filtered tool set (no recursive spawning). Each runs in its own goroutine with an isolated context. The parent can wait for results or stop subagents.
+
+## HTTP API Gateway
+
+OpenAI-compatible REST API with optional Bearer token authentication.
+
+```yaml
+gateway:
+  enabled: true
+  address: ":8080"
+  auth_token: "your-secret-token"
+  cors_origins: ["http://localhost:3000"]
+```
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| POST | `/v1/chat/completions` | OpenAI-compatible chat (supports SSE streaming) |
+| GET | `/api/sessions` | List all sessions |
+| GET | `/api/sessions/:id` | Get session details |
+| DELETE | `/api/sessions/:id` | Delete a session |
+| GET | `/api/usage` | Global token usage stats |
+| GET | `/api/usage/:session` | Per-session usage |
+| GET | `/api/status` | System status |
+| POST | `/api/webhooks` | Register webhook |
+
+## Security
+
+### Encrypted Vault
+
+Secrets stored in `.goclaw.vault` — AES-256-GCM encryption with Argon2id key derivation (64 MB memory, 3 iterations, 4 threads). Master password never stored.
+
+```
+Resolution order (first match wins):
+  1. Encrypted vault (.goclaw.vault)
+  2. OS keyring (GNOME/macOS/Windows)
+  3. Environment variable (GOCLAW_API_KEY)
+  4. config.yaml (${GOCLAW_API_KEY} reference)
+```
+
+### SSRF Protection
+
+`web_fetch` validates URLs before fetching: blocks private IPs (10.x, 172.16-31.x, 192.168.x), loopback, link-local, cloud metadata endpoints (169.254.169.254), and non-HTTP/S schemes. Hostnames are resolved to IPs before checking.
+
+### Access Control
+
+```yaml
+access:
+  default_policy: deny    # deny | allow | ask
+  owners: ["5511999999999"]
+  admins: []
+  allowed_users: []
+  blocked_users: []
+  allowed_groups: []
+  blocked_groups: []
+```
+
+Roles: **owner** > **admin** > **user** > **blocked**. Managed via chat commands (`/allow`, `/block`, `/admin`, `/users`).
+
+### Script Sandbox
+
+Community scripts (Python, Node.js, Shell) execute in isolated environments:
+
+| Level | Isolation | Use Case |
+|-------|-----------|----------|
+| `none` | Direct exec | Trusted/builtin only |
+| `restricted` | Linux namespaces (PID, mount, net, user) | Community skills |
+| `container` | Docker with purpose-built image | Untrusted scripts |
+
+Pre-execution content scanning detects: `eval()`, reverse shells, crypto mining, shell injection, data exfiltration, and obfuscated code.
 
 ## Channels
 
 ### WhatsApp (core)
 
-Native Go implementation using [whatsmeow](https://go.mau.fi/whatsmeow). Compiled into the binary — no Node.js, no Baileys.
+Native Go via [whatsmeow](https://go.mau.fi/whatsmeow). Supports: text, images, audio, video, documents, stickers, voice notes, locations, contacts, reactions, reply/quoting, typing indicators, read receipts, group messages.
 
-Full support: text, images, audio, video, documents, stickers, voice notes, locations, contacts, reactions, reply/quoting, typing indicators, read receipts, group messages.
+Device name: "GoClaw". LID (Linked Identity) resolution for phone number normalization.
 
-```yaml
-channels:
-  whatsapp:
-    session_dir: "./sessions/whatsapp"
-    trigger: "@copilot"
-    respond_to_groups: true
-    respond_to_dms: true
-    auto_read: true
-    send_typing: true
-    media_dir: "./data/media"
-    max_media_size_mb: 16
-```
+### Media Processing
 
-### Discord & Telegram (plugins)
-
-Loaded as Go plugins (`.so`) at runtime. Not everyone needs every channel.
-
-```go
-// Build a channel plugin
-// my_channel_plugin.go
-package main
-
-import "github.com/jholhewres/goclaw/pkg/goclaw/channels"
-
-var Channel channels.Channel = &MyChannel{}
-
-// go build -buildmode=plugin -o plugins/mychannel.so my_channel_plugin.go
-```
-
-## Skills
-
-Skills teach the agent new capabilities. They live in a separate repository ([goclaw-skills](https://github.com/jholhewres/goclaw-skills)) and are managed via CLI.
-
-### Two Formats
-
-| Format | Files | Runtime | Security |
-|--------|-------|---------|----------|
-| **Native Go** | `skill.yaml` + `skill.go` | Compiled Go | Full trust (compiled) |
-| **SKILL.md** | `SKILL.md` + `scripts/` | Python, Node.js, Shell | Sandboxed |
-
-The SKILL.md format is fully compatible with [OpenClaw's skill repository](https://github.com/openclaw/skills) — GoClaw can run community skills from that ecosystem through its sandbox.
-
-### Catalog
-
-| Category | Skill | Tools | Requires |
-|----------|-------|-------|----------|
-| Builtin | **weather** | `get_weather`, `get_forecast`, `get_moon` | — |
-| Builtin | **calculator** | `calculate`, `convert_units` | — |
-| Data | **web-search** | `search`, `search_news` | `BRAVE_API_KEY` or `SEARXNG_URL` |
-| Data | **web-fetch** | `fetch`, `fetch_headers`, `fetch_json` | — |
-| Data | **summarize** | `summarize_url`, `transcribe_url`, `summarize_file` | `summarize` CLI |
-| Development | **github** | 17 tools (issues, PRs, CI/CD, releases, search) | `gh` CLI |
-| Productivity | **gog** | Gmail, Calendar, Drive (11 tools) | `gog` CLI |
-
-See the full [Skills Catalog](docs/skills-catalog.md).
-
-### CLI Management
-
-```bash
-copilot skill list                         # List installed
-copilot skill search calendar              # Search available
-copilot skill install calendar             # Install native Go skill
-copilot skill install --from clawdhub 1password  # Install community skill (sandboxed)
-copilot skill update --all                 # Update all
-copilot skill create my-skill              # Scaffold a new skill
-```
-
-## Script Sandbox
-
-This is the answer to the open-source security problem. When you have hundreds of community-contributed scripts, you can't audit them all. So you sandbox them.
-
-### Isolation Levels
-
-| Level | How | Use Case |
-|-------|-----|----------|
-| **none** | Direct `exec.Command` | Trusted/builtin skills only |
-| **restricted** | Linux namespaces (PID, mount, network, user) | Community skills |
-| **container** | Docker with purpose-built image | Untrusted scripts |
-
-### What Gets Blocked
-
-**Before execution** — script content is scanned for:
-
-| Pattern | Severity | Examples |
-|---------|----------|---------|
-| Dangerous eval | Critical | `exec()`, `eval()`, `new Function()` |
-| Shell injection | Critical | `subprocess.run(shell=True)` |
-| Reverse shells | Critical | `/dev/tcp/`, `nc -e`, `socket.connect` |
-| Crypto mining | Critical | `stratum+tcp`, `coinhive`, `xmrig` |
-| Data exfiltration | Warning | Access to `/etc/passwd`, `.ssh/` |
-| Obfuscation | Warning | Hex-encoded strings, `base64+exec` |
-
-**During execution** — the sandbox enforces:
-
-- Environment filtering (blocks `LD_PRELOAD`, `NODE_OPTIONS`, `PYTHONPATH`, etc.)
-- Network isolation (no outbound connections by default)
-- Resource limits (CPU, memory, timeout)
-- Read-only filesystem (container mode)
-- Non-root execution with dropped capabilities
+Incoming images are automatically described via the LLM vision API. Incoming audio is transcribed via Whisper. Results are prepended to the user message before agent processing.
 
 ```yaml
-sandbox:
-  default_isolation: restricted
-  timeout: 60s
-  max_memory_mb: 256
-  allow_network: false
-  docker:
-    image: goclaw-sandbox:latest
-    network: none
+media:
+  vision_enabled: true
+  vision_detail: auto       # auto | low | high
+  transcription_enabled: true
+  transcription_model: whisper-1
+  max_image_size: 20971520  # 20MB
+  max_audio_size: 26214400  # 25MB
 ```
 
-## Security
+### Message Splitting
 
-Security is applied at every stage of the message flow:
+Long responses are split into channel-compatible chunks (WhatsApp: 4096 chars). Splits preserve code blocks and prefer paragraph/sentence boundaries.
 
-| Stage | Protection |
-|-------|-----------|
-| **Secrets** | Encrypted vault (AES-256-GCM + Argon2id), OS keyring, env vars — never plaintext on disk |
-| **Access** | Allowlist/blocklist, deny-by-default, per-user and per-group permissions |
-| **Input** | Rate limiting, prompt injection detection, max input length |
-| **Session** | Isolated per chat and per workspace, auto-pruning |
-| **Prompt** | 8-layer system with token budget, no unbounded context |
-| **Tools** | Whitelist per skill, confirmation for destructive actions |
-| **Scripts** | Multi-level sandbox, env filtering, content scanning |
-| **Output** | System prompt leak detection, empty response fallback |
-| **Deploy** | systemd hardening (ProtectSystem, PrivateTmp, MemoryMax) |
+### WhatsApp Markdown
 
-### Encrypted Vault
+Standard markdown is converted to WhatsApp format: `**bold**` → `*bold*`, `_italic_`, `~~strike~~`, `` `code` ``, code blocks.
 
-API keys and secrets are stored in an **encrypted vault** (`.goclaw.vault`) protected by a master password you choose during setup. Even with full filesystem access, nobody can read your credentials without the password.
+## Message Queue
 
-- **Encryption**: AES-256-GCM (authenticated encryption)
-- **Key derivation**: Argon2id (64 MB memory, 3 iterations, 4 threads — resistant to brute-force and GPU attacks)
-- **Password**: never stored anywhere — exists only in your memory
-- **File permissions**: 0600 (owner read/write only)
+Per-session debounce and deduplication for message bursts:
 
-```
-Secret resolution order (first match wins):
-
-  1. Encrypted vault   (.goclaw.vault)     — password required, most secure
-  2. OS keyring        (GNOME/macOS/Win)   — requires user session
-  3. Environment var   (GOCLAW_API_KEY)    — process-level
-  4. config.yaml       (${GOCLAW_API_KEY}) — plaintext, least secure
+```yaml
+queue:
+  debounce_ms: 1000
+  max_pending: 20
 ```
 
-#### Vault Commands
+Messages arriving while the agent is processing are queued. Duplicate messages (same content within 5s) are dropped. When the agent finishes, queued messages are combined and processed as one.
 
-```bash
-copilot config vault-init              # Create vault with master password
-copilot config vault-set               # Store API key in vault (encrypted)
-copilot config vault-status            # Show vault status and stored keys
-copilot config vault-change-password   # Re-encrypt with new password
-copilot config key-status              # Show where the API key is loaded from
+## Token Usage Tracking
+
+Per-session and global tracking of prompt tokens, completion tokens, request count, and estimated cost.
+
+| Model | Input/1M | Output/1M |
+|-------|----------|-----------|
+| `gpt-5-mini` | $0.15 | $0.60 |
+| `gpt-5` | $2.00 | $8.00 |
+| `gpt-4o` | $2.50 | $10.00 |
+| `claude-opus-4.6` | $5.00 | $25.00 |
+| `claude-sonnet-4.5` | $3.00 | $15.00 |
+| `glm-5` | $1.00 | $3.20 |
+| `glm-4.7-flash` | $0.10 | $0.40 |
+
+View via `/usage` command or `GET /api/usage`.
+
+## Config Hot-Reload
+
+`ConfigWatcher` monitors `config.yaml` for changes (mtime + SHA256 hash). Hot-reloadable fields: access control, instructions, tool guard, heartbeat, token budget. No restart required.
+
+## Scheduler
+
+Cron-based task scheduler with file persistence:
+
+```yaml
+scheduler:
+  enabled: true
+  storage: ./data/scheduler.db
 ```
 
-On startup (`copilot serve` or `copilot chat`), if the vault exists, GoClaw prompts for the master password before connecting.
+Tasks are managed via tools (`schedule_add`, `schedule_list`, `schedule_remove`) or CLI (`copilot schedule`).
 
-## Configuration
+## Heartbeat
 
-```bash
-./bin/copilot setup    # Interactive wizard (recommended for first time)
-make init              # Create config.yaml with defaults
-make validate          # Validate without running
-make run               # Build + serve (auto-detects config.yaml)
-make run VERBOSE=1     # With debug logs
+Proactive agent behavior on a configurable interval:
+
+```yaml
+heartbeat:
+  enabled: true
+  interval: 30m
+  active_start: 9
+  active_end: 22
+  channel: whatsapp
+  chat_id: "5511999999999"
 ```
 
-Full config reference: see [configs/copilot.example.yaml](configs/copilot.example.yaml).
+The agent reads `HEARTBEAT.md` for pending tasks and acts on them. Replies with `HEARTBEAT_OK` if nothing needs attention.
 
-## Deploy
+## Workspaces
 
-### Docker
+Multi-tenant isolation with independent system prompts, skills, models, languages, and conversation memory per workspace.
 
-```bash
-docker compose up -d
-docker compose logs -f copilot
-```
-
-### systemd
-
-```bash
-sudo cp copilot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now copilot
-```
-
-### Direct binary
-
-```bash
-make build
-./bin/copilot serve
+```yaml
+workspaces:
+  default_workspace: default
+  workspaces:
+    - id: default
+      name: Default
+      active: true
+    - id: work
+      name: Dev Team
+      model: gpt-4o-mini
+      language: en
+      skills: [github, web-search]
+      members: ["5511888888888"]
+      groups: ["120363000000000000@g.us"]
 ```
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `copilot setup` | Interactive setup wizard (config + vault) |
-| `copilot chat [msg]` | Interactive chat or single message |
+| `copilot setup` | Interactive setup wizard (arrow keys, model selection, vault) |
 | `copilot serve` | Start daemon with messaging channels |
+| `copilot chat [msg]` | Interactive REPL or single message |
 | `copilot config init` | Create default config |
 | `copilot config show` | Show current config |
 | `copilot config validate` | Validate config |
@@ -434,96 +503,77 @@ make build
 | `copilot skill install <name>` | Install a skill |
 | `copilot schedule list` | List scheduled tasks |
 | `copilot schedule add <cron> <cmd>` | Add a scheduled task |
-| `copilot remember <fact>` | Save to long-term memory |
 | `copilot health` | Check service health |
 
-## Project Structure
+### Chat Commands (via messaging or CLI REPL)
 
-```
-goclaw/
-├── cmd/copilot/                # CLI application
-│   └── commands/               # Cobra commands (chat, serve, setup, config, etc.)
-├── pkg/goclaw/
-│   ├── channels/               # Channel interface + Manager
-│   │   └── whatsapp/           # WhatsApp (whatsmeow, core)
-│   ├── copilot/                # Assistant orchestrator
-│   │   ├── assistant.go        # Main message flow + agent orchestration
-│   │   ├── agent.go            # Agent loop (multi-turn tool calling)
-│   │   ├── access.go           # Access control (allowlist/blocklist)
-│   │   ├── workspace.go        # Multi-tenant workspaces
-│   │   ├── commands.go         # Admin commands via chat
-│   │   ├── prompt_layers.go    # 8-layer prompt composer
-│   │   ├── session.go          # Session isolation + compaction
-│   │   ├── llm.go              # LLM client (OpenAI-compatible)
-│   │   ├── tool_executor.go    # Tool registry + dispatch
-│   │   ├── system_tools.go     # Built-in tools (web, file, memory, cron)
-│   │   ├── skill_creator.go    # Create skills via chat
-│   │   ├── heartbeat.go        # Proactive agent behavior
-│   │   ├── vault.go            # Encrypted vault (AES-256-GCM + Argon2id)
-│   │   ├── keyring.go          # OS keyring + secret resolution chain
-│   │   ├── loader.go           # YAML config loader + env expansion
-│   │   ├── memory/             # Persistent memory (filesystem)
-│   │   └── security/           # I/O guardrails
-│   ├── plugins/                # Go native plugin loader (.so)
-│   ├── sandbox/                # Script sandbox (namespaces/Docker)
-│   ├── skills/                 # Skill system + ClawdHub + builtin adapter
-│   └── scheduler/              # Cron scheduler with file persistence
-├── skills/                     # Submodule → goclaw-skills
-├── configs/                    # Example configs + bootstrap files
-├── .goclaw.vault               # Encrypted secrets (gitignored)
-├── Makefile
-├── Dockerfile
-├── docker-compose.yml
-├── copilot.service
-└── go.mod
+| Command | Description |
+|---------|-------------|
+| `/help` | List all commands |
+| `/allow <phone>` | Grant access |
+| `/block <phone>` | Block a contact |
+| `/admin <phone>` | Promote to admin |
+| `/users` | List authorized users |
+| `/group allow` | Allow current group |
+| `/status` | Bot status |
+| `/model [name]` | Show or change model |
+| `/usage [global\|reset]` | Token usage stats |
+| `/compact` | Trigger session compaction |
+| `/think [off\|low\|medium\|high]` | Set thinking level |
+| `/new` | Clear session history |
+| `/reset` | Full session reset |
+| `/stop` | Cancel active agent run |
+| `/approve <id>` | Approve pending tool execution |
+| `/deny <id>` | Deny pending tool execution |
+| `/ws create <id> <name>` | Create workspace |
+| `/ws assign <phone> <ws>` | Assign user to workspace |
+| `/ws list` | List workspaces |
+
+### CLI Chat Features
+
+Interactive REPL with `readline` support: arrow key history (↑/↓), reverse search (Ctrl+R), tab completion, line editing (Ctrl+A/E/W/U), persistent history (`~/.goclaw/chat_history`).
+
+## Deployment
+
+### Docker
+
+```bash
+docker compose up -d
+docker compose logs -f copilot
 ```
 
-## Key Dependencies
+### systemd
+
+```bash
+sudo cp copilot.service /etc/systemd/system/
+sudo systemctl enable --now copilot
+```
+
+### Binary
+
+```bash
+make build && ./bin/copilot serve
+```
+
+## Dependencies
 
 | Package | Purpose |
 |---------|---------|
-| [whatsmeow](https://go.mau.fi/whatsmeow) | WhatsApp (native Go, core) |
+| [whatsmeow](https://go.mau.fi/whatsmeow) | WhatsApp channel (native Go) |
 | [cobra](https://github.com/spf13/cobra) | CLI framework |
+| [huh](https://github.com/charmbracelet/huh) | Interactive terminal forms (setup wizard) |
+| [readline](https://github.com/chzyer/readline) | CLI chat interactivity |
 | [cron](https://github.com/robfig/cron) | Task scheduler |
 | [yaml.v3](https://gopkg.in/yaml.v3) | Configuration |
-| [go-keyring](https://github.com/zalando/go-keyring) | OS keyring (GNOME/macOS/Windows) |
-| [x/crypto](https://pkg.go.dev/golang.org/x/crypto) | Argon2id key derivation for vault |
-| [x/term](https://pkg.go.dev/golang.org/x/term) | Hidden password input |
-| [godotenv](https://github.com/joho/godotenv) | .env file loading |
+| [go-keyring](https://github.com/zalando/go-keyring) | OS keyring integration |
+| [x/crypto](https://pkg.go.dev/golang.org/x/crypto) | Argon2id (vault key derivation) |
+| [qrterminal](https://github.com/mdp/qrterminal) | QR code rendering |
 
-No external dependencies for the sandbox — uses Go's `os/exec`, `syscall` (Linux namespaces), and Docker CLI.
-Encryption uses Go's standard library (`crypto/aes`, `crypto/cipher`) + `x/crypto` for Argon2id.
+Encryption: Go stdlib (`crypto/aes`, `crypto/cipher`). Sandbox: `os/exec`, `syscall` (Linux namespaces), Docker CLI.
 
-## Roadmap
+## Author
 
-- [x] Core: channels, skills, scheduler, assistant, security guardrails
-- [x] CLI: chat (interactive REPL), serve, schedule, skill, config, setup, remember, health
-- [x] Interactive setup wizard (guided config + vault creation)
-- [x] Encrypted vault for secrets (AES-256-GCM + Argon2id)
-- [x] OS keyring integration (GNOME Keyring / macOS Keychain / Windows Credential Manager)
-- [x] Agent loop with multi-turn tool calling and reflection
-- [x] Persistent memory (filesystem-based: MEMORY.md, daily logs)
-- [x] Session compaction (LLM-based summarization)
-- [x] Prompt composer (8 layers with token budget)
-- [x] Session isolation with auto-pruning
-- [x] WhatsApp channel (whatsmeow — text, media, audio, video, docs, stickers, reactions)
-- [x] Plugin loader (Go native `.so`)
-- [x] Access control (allowlist, blocklist, deny-by-default, LID resolution)
-- [x] Multi-tenant workspaces with isolated memory
-- [x] Admin commands via chat (/allow, /block, /ws, /group)
-- [x] YAML config loader with auto-discovery + env expansion
-- [x] Script sandbox (none / Linux namespaces / Docker)
-- [x] OpenClaw SKILL.md compatibility layer
-- [x] Cron scheduler with file persistence + proactive heartbeat
-- [x] Skill creation via chat (init_skill, edit_skill, add_script)
-- [x] Built-in tools: web_search, web_fetch, exec, read/write/list files, memory, cron
-- [x] 8 skills: weather, calculator, github, web-search, web-fetch, summarize, gog, calendar
-- [ ] Discord channel plugin
-- [ ] Telegram channel plugin
-- [ ] `copilot skill install --from clawdhub` implementation
-- [ ] RAG with embeddings
-- [ ] Web dashboard
-- [ ] Multi-agent teams
+**Jhol Hewres** — [jhol.code@gmail.com](mailto:jhol.code@gmail.com)
 
 ## License
 
