@@ -8,12 +8,15 @@
 package copilot
 
 import (
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jholhewres/goclaw/pkg/goclaw/copilot/memory"
@@ -43,21 +46,47 @@ type layerEntry struct {
 	content string
 }
 
+// bootstrapCacheEntry holds a cached bootstrap file.
+type bootstrapCacheEntry struct {
+	content string
+	hash    [32]byte // SHA-256 of the on-disk content.
+}
+
 // PromptComposer assembles the final system prompt from multiple layers.
 type PromptComposer struct {
-	config      *Config
-	memoryStore *memory.FileStore
-	skillGetter func(name string) (interface{ SystemPrompt() string }, bool)
+	config       *Config
+	memoryStore  *memory.FileStore
+	sqliteMemory *memory.SQLiteStore
+	skillGetter  func(name string) (interface{ SystemPrompt() string }, bool)
+	isSubagent   bool // When true, only AGENTS.md + TOOLS.md are loaded.
+
+	// bootstrapCache caches bootstrap file contents to avoid re-reading from disk
+	// on every prompt compose. Invalidated when file content changes (hash mismatch).
+	bootstrapCacheMu sync.RWMutex
+	bootstrapCache   map[string]*bootstrapCacheEntry
 }
 
 // NewPromptComposer creates a new prompt composer.
 func NewPromptComposer(config *Config) *PromptComposer {
-	return &PromptComposer{config: config}
+	return &PromptComposer{
+		config:         config,
+		bootstrapCache: make(map[string]*bootstrapCacheEntry),
+	}
 }
 
-// SetMemoryStore configures the memory store for the prompt composer.
+// SetSubagentMode restricts bootstrap loading to AGENTS.md + TOOLS.md only.
+func (p *PromptComposer) SetSubagentMode(isSubagent bool) {
+	p.isSubagent = isSubagent
+}
+
+// SetMemoryStore configures the file-based memory store for the prompt composer.
 func (p *PromptComposer) SetMemoryStore(store *memory.FileStore) {
 	p.memoryStore = store
+}
+
+// SetSQLiteMemory configures the SQLite memory store for hybrid search.
+func (p *PromptComposer) SetSQLiteMemory(store *memory.SQLiteStore) {
+	p.sqliteMemory = store
 }
 
 // SetSkillGetter sets the function used to retrieve skill system prompts.
@@ -213,8 +242,11 @@ func (p *PromptComposer) buildThinkingLayer(session *Session) string {
 }
 
 // buildBootstrapLayer loads bootstrap files from the workspace root.
+// Uses an in-memory cache with hash-based invalidation to avoid repeated disk reads.
+// In subagent mode, only AGENTS.md and TOOLS.md are loaded.
 func (p *PromptComposer) buildBootstrapLayer() string {
-	bootstrapFiles := []struct {
+	// Full list of bootstrap files.
+	allBootstrapFiles := []struct {
 		Path    string
 		Section string
 	}{
@@ -224,6 +256,21 @@ func (p *PromptComposer) buildBootstrapLayer() string {
 		{"USER.md", "USER.md"},
 		{"TOOLS.md", "TOOLS.md"},
 		{"MEMORY.md", "MEMORY.md"},
+	}
+
+	// Subagent filter: only load AGENTS.md + TOOLS.md (like OpenClaw).
+	var bootstrapFiles []struct {
+		Path    string
+		Section string
+	}
+	if p.isSubagent {
+		for _, bf := range allBootstrapFiles {
+			if bf.Path == "AGENTS.md" || bf.Path == "TOOLS.md" {
+				bootstrapFiles = append(bootstrapFiles, bf)
+			}
+		}
+	} else {
+		bootstrapFiles = allBootstrapFiles
 	}
 
 	// Search directories: workspace dir, current dir, configs/.
@@ -240,24 +287,9 @@ func (p *PromptComposer) buildBootstrapLayer() string {
 	hasSoul := false
 
 	for _, bf := range bootstrapFiles {
-		var content []byte
-		var err error
-
-		for _, dir := range searchDirs {
-			content, err = os.ReadFile(filepath.Join(dir, bf.Path))
-			if err == nil {
-				break
-			}
-		}
-		if err != nil || len(strings.TrimSpace(string(content))) == 0 {
+		text := p.loadBootstrapFileCached(bf.Path, searchDirs)
+		if text == "" {
 			continue
-		}
-
-		text := strings.TrimSpace(string(content))
-
-		// Truncate very large files.
-		if len(text) > 20000 {
-			text = text[:20000] + "\n\n... [truncated at 20KB]"
 		}
 
 		files = append(files, struct {
@@ -287,7 +319,71 @@ func (p *PromptComposer) buildBootstrapLayer() string {
 		b.WriteString(fmt.Sprintf("## %s\n\n%s\n\n", f.path, f.content))
 	}
 
-	return b.String()
+	// Apply bootstrapMaxChars limit.
+	result := b.String()
+	maxChars := p.config.TokenBudget.BootstrapMaxChars
+	if maxChars <= 0 {
+		maxChars = 20000 // default 20K chars (~5K tokens)
+	}
+	if len(result) > maxChars {
+		result = result[:maxChars] + "\n\n... [bootstrap truncated at limit]"
+	}
+
+	return result
+}
+
+// loadBootstrapFileCached loads a bootstrap file with in-memory caching.
+// Returns the trimmed content, or "" if the file doesn't exist or is empty.
+// Cache is invalidated when the file content hash changes.
+func (p *PromptComposer) loadBootstrapFileCached(filename string, searchDirs []string) string {
+	// Try to find the file in search directories.
+	var fullPath string
+	var content []byte
+	var err error
+	for _, dir := range searchDirs {
+		candidate := filepath.Join(dir, filename)
+		content, err = os.ReadFile(candidate)
+		if err == nil {
+			fullPath = candidate
+			break
+		}
+	}
+	if err != nil || len(strings.TrimSpace(string(content))) == 0 {
+		// File not found or empty: remove from cache.
+		p.bootstrapCacheMu.Lock()
+		delete(p.bootstrapCache, filename)
+		p.bootstrapCacheMu.Unlock()
+		return ""
+	}
+
+	hash := sha256.Sum256(content)
+
+	// Check cache.
+	p.bootstrapCacheMu.RLock()
+	cached, ok := p.bootstrapCache[filename]
+	p.bootstrapCacheMu.RUnlock()
+
+	if ok && cached.hash == hash {
+		return cached.content
+	}
+
+	// Cache miss or hash changed: parse and cache.
+	text := strings.TrimSpace(string(content))
+
+	// Per-file size limit: 20KB.
+	if len(text) > 20000 {
+		text = text[:20000] + "\n\n... [truncated at 20KB]"
+	}
+
+	p.bootstrapCacheMu.Lock()
+	p.bootstrapCache[filename] = &bootstrapCacheEntry{
+		content: text,
+		hash:    hash,
+	}
+	p.bootstrapCacheMu.Unlock()
+
+	_ = fullPath // used for identification; could log on change in the future
+	return text
 }
 
 // buildSkillsLayer creates instructions from active skills.
@@ -320,11 +416,42 @@ func (p *PromptComposer) buildSkillsLayer(session *Session) string {
 }
 
 // buildMemoryLayer creates the memory context section.
+// Uses hybrid search (vector + BM25) when SQLite memory is available,
+// otherwise falls back to substring matching on the file store.
 func (p *PromptComposer) buildMemoryLayer(session *Session, input string) string {
 	var parts []string
 
-	// Pull from persistent memory store.
-	if p.memoryStore != nil {
+	// Try hybrid search first (SQLite with FTS5 + vector).
+	if p.sqliteMemory != nil && input != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		searchCfg := p.config.Memory.Search
+		maxResults := searchCfg.MaxResults
+		if maxResults <= 0 {
+			maxResults = 6
+		}
+
+		results, err := p.sqliteMemory.HybridSearch(
+			ctx, input, maxResults, searchCfg.MinScore,
+			searchCfg.HybridWeightVector, searchCfg.HybridWeightBM25,
+		)
+		if err == nil && len(results) > 0 {
+			var b strings.Builder
+			b.WriteString("## Memory Recall\n\nRelevant facts from long-term memory (semantic search):\n\n")
+			for _, r := range results {
+				text := r.Text
+				if len(text) > 500 {
+					text = text[:500] + "..."
+				}
+				b.WriteString(fmt.Sprintf("- [%s] %s\n", r.FileID, text))
+			}
+			parts = append(parts, b.String())
+		}
+	}
+
+	// Fallback: file-based substring search.
+	if len(parts) == 0 && p.memoryStore != nil {
 		facts := p.memoryStore.RecentFacts(15, input)
 		if facts != "" {
 			parts = append(parts, "## Memory Recall\n\nRelevant facts from long-term memory:\n\n"+facts)

@@ -24,7 +24,9 @@ const (
 	DefaultMaxTurns = 25
 
 	// DefaultTurnTimeout is the timeout for a single LLM call within the loop.
-	DefaultTurnTimeout = 90 * time.Second
+	// Set high (300s) to accommodate slow models (e.g. GLM-5 cold starts ~30-60s)
+	// and complex multi-tool turns. OpenClaw uses 600s; 300s is a good middle ground.
+	DefaultTurnTimeout = 300 * time.Second
 
 	// DefaultMaxContinuations is how many times the agent can auto-continue
 	// after exhausting its turn budget. 0 = no auto-continue.
@@ -42,7 +44,7 @@ type AgentConfig struct {
 	// MaxTurns is the max LLM round-trips per agent run (default: 25).
 	MaxTurns int `yaml:"max_turns"`
 
-	// TurnTimeoutSeconds is the max seconds per LLM call (default: 90).
+	// TurnTimeoutSeconds is the max seconds per LLM call (default: 300).
 	TurnTimeoutSeconds int `yaml:"turn_timeout_seconds"`
 
 	// MaxContinuations is how many auto-continue rounds are allowed when
@@ -61,7 +63,7 @@ type AgentConfig struct {
 func DefaultAgentConfig() AgentConfig {
 	return AgentConfig{
 		MaxTurns:                DefaultMaxTurns,
-		TurnTimeoutSeconds:      90,
+		TurnTimeoutSeconds:      300,
 		MaxContinuations:        DefaultMaxContinuations,
 		ReflectionEnabled:       true,
 		MaxCompactionAttempts:   DefaultMaxCompactionAttempts,

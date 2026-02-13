@@ -311,7 +311,22 @@ func (a *Assistant) compactCommand(msg *channels.IncomingMessage) string {
 
 func (a *Assistant) newCommand(msg *channels.IncomingMessage) string {
 	resolved := a.workspaceMgr.Resolve(msg.Channel, msg.ChatID, msg.From, msg.IsGroup)
-	resolved.Session.ClearHistory()
+	session := resolved.Session
+
+	// Session-memory hook: capture history snapshot, then clear.
+	// We capture before clearing to avoid a race with the goroutine.
+	if a.config.Memory.SessionMemory.Enabled && a.memoryStore != nil {
+		maxMsg := a.config.Memory.SessionMemory.Messages
+		if maxMsg <= 0 {
+			maxMsg = 15
+		}
+		historySnapshot := session.RecentHistory(maxMsg)
+		if len(historySnapshot) >= 2 {
+			go a.summarizeAndSaveSessionFromHistory(historySnapshot)
+		}
+	}
+
+	session.ClearHistory()
 	return "New session started. Facts and config preserved."
 }
 

@@ -1090,7 +1090,8 @@ func (c *LLMClient) CompleteWithToolsStream(ctx context.Context, messages []chat
 }
 
 // CompleteWithToolsStreamUsingModel is like CompleteWithToolsStream but uses modelOverride
-// when non-empty. Empty = use c.model.
+// when non-empty. Empty = use c.model. Includes retry for transient HTTP errors
+// before falling back to non-streaming.
 func (c *LLMClient) CompleteWithToolsStreamUsingModel(ctx context.Context, modelOverride string, messages []chatMessage, tools []ToolDefinition, onChunk StreamCallback) (*LLMResponse, error) {
 	if c.apiKey == "" {
 		return nil, fmt.Errorf("API key not configured. Run 'copilot config set-key' or set GOCLAW_API_KEY")
@@ -1101,14 +1102,41 @@ func (c *LLMClient) CompleteWithToolsStreamUsingModel(ctx context.Context, model
 		model = modelOverride
 	}
 
-	resp, err := c.completeOnceStream(ctx, model, messages, tools, onChunk)
-	if err == nil {
-		return resp, nil
+	// Try streaming with 1 retry for transient errors (like OpenClaw's 2.5s retry).
+	const maxStreamRetries = 1
+	const transientRetryDelay = 2500 * time.Millisecond
+
+	var lastErr error
+	for attempt := 0; attempt <= maxStreamRetries; attempt++ {
+		resp, err := c.completeOnceStream(ctx, model, messages, tools, onChunk)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+
+		// Check if the error is transient (retryable HTTP status).
+		if apierr, ok := err.(*apiError); ok && c.isRetryable(apierr.statusCode) {
+			c.logger.Info("transient streaming error, retrying",
+				"model", model,
+				"attempt", attempt+1,
+				"status", apierr.statusCode,
+				"error", err,
+			)
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled during stream retry: %w", ctx.Err())
+			case <-time.After(transientRetryDelay):
+				continue
+			}
+		}
+
+		// Non-transient error: break out and fall back.
+		break
 	}
 
-	// Fallback to non-streaming (e.g. provider doesn't support stream)
-	c.logger.Debug("streaming failed, falling back to non-streaming", "error", err)
-	return c.CompleteWithToolsUsingModel(ctx, modelOverride, messages, tools)
+	// Fallback to non-streaming with full retry/fallback chain.
+	c.logger.Debug("streaming failed, falling back to non-streaming", "error", lastErr)
+	return c.CompleteWithFallbackUsingModel(ctx, modelOverride, messages, tools)
 }
 
 // completeOnceStream performs a single streaming chat completion. Uses SSE parsing.

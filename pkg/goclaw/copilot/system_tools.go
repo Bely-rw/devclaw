@@ -23,7 +23,7 @@ import (
 // RegisterSystemTools registers all built-in system tools in the executor.
 // These are core tools available regardless of which skills are loaded.
 // If ssrfGuard is non-nil, web_fetch will validate URLs against SSRF rules.
-func RegisterSystemTools(executor *ToolExecutor, sandboxRunner *sandbox.Runner, memStore *memory.FileStore, sched *scheduler.Scheduler, dataDir string, ssrfGuard *security.SSRFGuard) {
+func RegisterSystemTools(executor *ToolExecutor, sandboxRunner *sandbox.Runner, memStore *memory.FileStore, sqliteStore *memory.SQLiteStore, memCfg MemoryConfig, sched *scheduler.Scheduler, dataDir string, ssrfGuard *security.SSRFGuard) {
 	registerWebSearchTool(executor)
 	registerWebFetchTool(executor, ssrfGuard)
 	registerFileTools(executor, dataDir)
@@ -34,7 +34,7 @@ func RegisterSystemTools(executor *ToolExecutor, sandboxRunner *sandbox.Runner, 
 	}
 
 	if memStore != nil {
-		registerMemoryTools(executor, memStore)
+		registerMemoryTools(executor, memStore, sqliteStore, memCfg)
 	}
 
 	if sched != nil {
@@ -1107,7 +1107,7 @@ func (c *osExecCmd) CombinedOutput() ([]byte, error) {
 
 // ---------- Memory Tools ----------
 
-func registerMemoryTools(executor *ToolExecutor, store *memory.FileStore) {
+func registerMemoryTools(executor *ToolExecutor, store *memory.FileStore, sqliteStore *memory.SQLiteStore, cfg MemoryConfig) {
 	// memory_save
 	executor.Register(
 		MakeToolDefinition("memory_save", "Save an important fact, preference, or piece of information to long-term memory. Use this to remember things about the user or important context.", map[string]any{
@@ -1144,13 +1144,31 @@ func registerMemoryTools(executor *ToolExecutor, store *memory.FileStore) {
 			if err != nil {
 				return nil, err
 			}
+
+			// Re-index the MEMORY.md file if SQLite memory is available.
+			if sqliteStore != nil && cfg.Index.Auto {
+				memDir := filepath.Join(filepath.Dir(cfg.Path), "memory")
+				chunkCfg := memory.ChunkConfig{MaxTokens: cfg.Index.ChunkMaxTokens, Overlap: 100}
+				if chunkCfg.MaxTokens <= 0 {
+					chunkCfg.MaxTokens = 500
+				}
+				go func() {
+					_ = sqliteStore.IndexMemoryDir(context.Background(), memDir, chunkCfg)
+				}()
+			}
+
 			return fmt.Sprintf("Saved to memory: %s", content), nil
 		},
 	)
 
-	// memory_search
+	// memory_search — uses hybrid search (vector + BM25) when available,
+	// falls back to substring matching.
+	searchDesc := "Search long-term memory for relevant facts, preferences, or past events."
+	if sqliteStore != nil {
+		searchDesc += " Uses semantic search (vector + keyword hybrid) for best results."
+	}
 	executor.Register(
-		MakeToolDefinition("memory_search", "Search long-term memory for relevant facts, preferences, or past events.", map[string]any{
+		MakeToolDefinition("memory_search", searchDesc, map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"query": map[string]any{
@@ -1164,7 +1182,7 @@ func registerMemoryTools(executor *ToolExecutor, store *memory.FileStore) {
 			},
 			"required": []string{"query"},
 		}),
-		func(_ context.Context, args map[string]any) (any, error) {
+		func(ctx context.Context, args map[string]any) (any, error) {
 			query, _ := args["query"].(string)
 			if query == "" {
 				return nil, fmt.Errorf("query is required")
@@ -1175,6 +1193,27 @@ func registerMemoryTools(executor *ToolExecutor, store *memory.FileStore) {
 				limit = int(l)
 			}
 
+			// Try hybrid search first.
+			if sqliteStore != nil {
+				results, err := sqliteStore.HybridSearch(
+					ctx, query, limit, cfg.Search.MinScore,
+					cfg.Search.HybridWeightVector, cfg.Search.HybridWeightBM25,
+				)
+				if err == nil && len(results) > 0 {
+					var sb strings.Builder
+					sb.WriteString(fmt.Sprintf("Found %d memories (semantic search):\n\n", len(results)))
+					for _, r := range results {
+						text := r.Text
+						if len(text) > 500 {
+							text = text[:500] + "..."
+						}
+						sb.WriteString(fmt.Sprintf("- [%s] (score: %.2f) %s\n", r.FileID, r.Score, text))
+					}
+					return sb.String(), nil
+				}
+			}
+
+			// Fallback to substring search.
 			entries, err := store.Search(query, limit)
 			if err != nil {
 				return nil, err
@@ -1229,6 +1268,30 @@ func registerMemoryTools(executor *ToolExecutor, store *memory.FileStore) {
 			return sb.String(), nil
 		},
 	)
+
+	// memory_index — manually trigger re-indexing of memory files.
+	if sqliteStore != nil {
+		executor.Register(
+			MakeToolDefinition("memory_index", "Manually re-index all memory files for semantic search. Run this after adding or modifying memory files.", map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			}),
+			func(ctx context.Context, _ map[string]any) (any, error) {
+				memDir := filepath.Join(filepath.Dir(cfg.Path), "memory")
+				chunkCfg := memory.ChunkConfig{MaxTokens: cfg.Index.ChunkMaxTokens, Overlap: 100}
+				if chunkCfg.MaxTokens <= 0 {
+					chunkCfg.MaxTokens = 500
+				}
+
+				if err := sqliteStore.IndexMemoryDir(ctx, memDir, chunkCfg); err != nil {
+					return nil, fmt.Errorf("indexing failed: %w", err)
+				}
+
+				return fmt.Sprintf("Memory index updated: %d files, %d chunks.",
+					sqliteStore.FileCount(), sqliteStore.ChunkCount()), nil
+			},
+		)
+	}
 }
 
 // ---------- Cron / Scheduler Tools ----------

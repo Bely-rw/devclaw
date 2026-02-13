@@ -48,7 +48,8 @@ goclaw/
 │   │   ├── usage_tracker.go  Token/cost tracking per session and global
 │   │   ├── access.go         Per-user/group allowlist, blocklist, roles
 │   │   ├── workspace.go      Multi-tenant workspace isolation
-│   │   ├── memory/           Persistent memory (MEMORY.md, daily logs, fact search)
+│   │   ├── block_streamer.go Progressive message delivery to channels
+│   │   ├── memory/           Persistent memory (SQLite FTS5+vector, embeddings, MEMORY.md)
 │   │   └── security/         SSRF guard for web_fetch
 │   ├── channels/             Channel interface + manager
 │   │   └── whatsapp/         Native Go WhatsApp (whatsmeow)
@@ -128,7 +129,7 @@ The agent iterates: call LLM → if tool_calls → execute tools → append resu
 | Parameter | Default | Config Key |
 |-----------|---------|------------|
 | Max turns per request | 25 | `agent.max_turns` |
-| Turn timeout | 90s | `agent.turn_timeout_seconds` |
+| Turn timeout | 300s | `agent.turn_timeout_seconds` |
 | Auto-continuations | 2 | `agent.max_continuations` |
 | Reflection interval | every 8 turns | — |
 | Max compaction attempts | 3 | `agent.max_compaction_attempts` |
@@ -173,6 +174,67 @@ Template files in `configs/bootstrap/` are loaded from the workspace root at run
 | `USER.md` | User profile (learned over time) |
 | `TOOLS.md` | Environment-specific notes (SSH hosts, API endpoints) |
 | `HEARTBEAT.md` | Periodic tasks for the heartbeat system |
+| `BOOT.md` | Instructions executed once after startup (proactive init) |
+
+## Block Streaming (Progressive Message Delivery)
+
+Long LLM responses are sent progressively to channels as partial messages, so the user sees activity in real-time instead of waiting for the complete response.
+
+```yaml
+block_stream:
+  enabled: false        # enable progressive delivery
+  min_chars: 80         # minimum chars before first block
+  idle_ms: 1200         # idle timeout before flushing partial block
+  max_chars: 3000       # force flush at this limit
+```
+
+Blocks are split at natural boundaries (paragraphs, sentence endings, list items). The final message is only sent if no blocks were already delivered, avoiding duplicates.
+
+## Advanced Memory (SQLite + Vector Search)
+
+In addition to file-based memory (`MEMORY.md`, daily logs), GoClaw supports a SQLite-backed memory store with FTS5 keyword search and in-process vector similarity search.
+
+### How It Works
+
+1. **Indexing**: `.md` files in the memory directory are chunked (by heading, paragraph, sentence) with configurable overlap
+2. **Embeddings**: chunks are embedded via OpenAI `text-embedding-3-small` (1536 dims) and cached in SQLite to minimize API calls
+3. **Delta Sync**: only re-indexes/re-embeds chunks whose SHA-256 hash changed
+4. **Hybrid Search**: combines BM25 (FTS5) and cosine similarity scores using Reciprocal Rank Fusion (RRF)
+
+### Configuration
+
+```yaml
+memory:
+  embedding:
+    provider: openai        # openai or none
+    model: text-embedding-3-small
+    dimensions: 1536
+    batch_size: 20
+  search:
+    hybrid_weight_vector: 0.7
+    hybrid_weight_bm25: 0.3
+    max_results: 6
+    min_score: 0.1
+  index:
+    auto: true              # auto-index on startup
+    chunk_max_tokens: 500
+  session_memory:
+    enabled: false          # summarize sessions on /new
+    messages: 15            # last N messages to summarize
+```
+
+### Memory Tools
+
+| Tool | Description |
+|------|-------------|
+| `memory_save` | Save facts (triggers re-index if SQLite enabled) |
+| `memory_search` | Hybrid semantic + keyword search (falls back to substring) |
+| `memory_list` | List recent memory entries |
+| `memory_index` | Manually trigger re-indexing of all memory files |
+
+### Session Memory
+
+When `session_memory.enabled` is true, the `/new` command summarizes the conversation via LLM before clearing history. The summary is saved to `memory/YYYY-MM-DD-slug.md` and indexed for future retrieval, giving the agent long-term recall of past interactions.
 
 ## Tools
 
@@ -193,8 +255,9 @@ Template files in `configs/bootstrap/` are loaded from the workspace root at run
 | `web_search` | DuckDuckGo search (HTML parsing, SSRF-protected) |
 | `web_fetch` | Fetch URL content (SSRF-protected) |
 | `memory_save` | Save facts to long-term memory |
-| `memory_search` | Search memory by keyword |
+| `memory_search` | Hybrid semantic + keyword search |
 | `memory_list` | List recent memory entries |
+| `memory_index` | Re-index memory files (SQLite store) |
 | `schedule_add` | Add cron task |
 | `schedule_list` | List scheduled tasks |
 | `schedule_remove` | Remove a scheduled task |
@@ -568,6 +631,7 @@ make build && ./bin/copilot serve
 | [go-keyring](https://github.com/zalando/go-keyring) | OS keyring integration |
 | [x/crypto](https://pkg.go.dev/golang.org/x/crypto) | Argon2id (vault key derivation) |
 | [qrterminal](https://github.com/mdp/qrterminal) | QR code rendering |
+| [go-sqlite3](https://github.com/mattn/go-sqlite3) | SQLite driver with FTS5 (memory index) |
 
 Encryption: Go stdlib (`crypto/aes`, `crypto/cipher`). Sandbox: `os/exec`, `syscall` (Linux namespaces), Docker CLI.
 

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -63,8 +64,11 @@ type Assistant struct {
 	// outputGuard validates outputs before sending.
 	outputGuard *security.OutputGuardrail
 
-	// memoryStore provides persistent long-term memory.
+	// memoryStore provides persistent long-term memory (file-based, always available).
 	memoryStore *memory.FileStore
+
+	// sqliteMemory provides advanced memory with FTS5 + vector search.
+	sqliteMemory *memory.SQLiteStore
 
 	// subagentMgr orchestrates subagent spawning and lifecycle.
 	subagentMgr *SubagentManager
@@ -167,7 +171,7 @@ func (a *Assistant) Start(ctx context.Context) error {
 		"workspaces", a.workspaceMgr.Count(),
 	)
 
-	// 0. Initialize memory store.
+	// 0. Initialize memory stores.
 	memDir := filepath.Join(filepath.Dir(a.config.Memory.Path), "memory")
 	memStore, err := memory.NewFileStore(memDir)
 	if err != nil {
@@ -176,9 +180,55 @@ func (a *Assistant) Start(ctx context.Context) error {
 		a.memoryStore = memStore
 	}
 
+	// 0a. Initialize SQLite memory with FTS5 + vector search (if configured).
+	if a.config.Memory.Type == "sqlite" {
+		embedCfg := a.config.Memory.Embedding
+		// Use main API key if embedding key not set.
+		if embedCfg.APIKey == "" {
+			embedCfg.APIKey = a.config.API.APIKey
+		}
+		embedder := memory.NewEmbeddingProvider(embedCfg)
+
+		dbPath := a.config.Memory.Path
+		if dbPath == "" {
+			dbPath = "./data/memory.db"
+		}
+
+		sqlStore, err := memory.NewSQLiteStore(dbPath, embedder, a.logger.With("component", "memory-index"))
+		if err != nil {
+			a.logger.Warn("SQLite memory store not available, falling back to file-based",
+				"error", err)
+		} else {
+			a.sqliteMemory = sqlStore
+			a.logger.Info("SQLite memory store initialized",
+				"embedding_provider", embedder.Name(),
+				"db", dbPath,
+			)
+
+			// Index memory files in background (fire-and-forget).
+			if a.config.Memory.Index.Auto {
+				go func() {
+					chunkCfg := memory.ChunkConfig{
+						MaxTokens: a.config.Memory.Index.ChunkMaxTokens,
+						Overlap:   100,
+					}
+					if chunkCfg.MaxTokens <= 0 {
+						chunkCfg.MaxTokens = 500
+					}
+					if err := sqlStore.IndexMemoryDir(a.ctx, memDir, chunkCfg); err != nil {
+						a.logger.Warn("initial memory indexing failed", "error", err)
+					}
+				}()
+			}
+		}
+	}
+
 	// 0b. Connect memory store and skill getter to prompt composer.
 	if a.memoryStore != nil {
 		a.promptComposer.SetMemoryStore(a.memoryStore)
+	}
+	if a.sqliteMemory != nil {
+		a.promptComposer.SetSQLiteMemory(a.sqliteMemory)
 	}
 	a.promptComposer.SetSkillGetter(func(name string) (interface{ SystemPrompt() string }, bool) {
 		skill, ok := a.skillRegistry.Get(name)
@@ -187,6 +237,19 @@ func (a *Assistant) Start(ctx context.Context) error {
 		}
 		return skill, true
 	})
+
+	// 0c. Wire session persistence (JSONL on disk).
+	sessDir := filepath.Join(filepath.Dir(a.config.Memory.Path), "sessions")
+	if sessDir == "" {
+		sessDir = "./data/sessions"
+	}
+	sessPersist, err := NewSessionPersistence(sessDir, a.logger.With("component", "session-persist"))
+	if err != nil {
+		a.logger.Warn("session persistence not available", "error", err)
+	} else {
+		a.sessionStore.SetPersistence(sessPersist)
+		a.logger.Info("session persistence enabled", "dir", sessDir)
+	}
 
 	// 1. Register skill loaders and load all skills.
 	a.registerSkillLoaders()
@@ -232,8 +295,59 @@ func (a *Assistant) Start(ctx context.Context) error {
 	// 6. Start main message processing loop.
 	go a.messageLoop()
 
+	// 7. Run BOOT.md if present (like OpenClaw's gateway:startup → BOOT.md).
+	// Executes after all channels are connected, with a short delay for stabilization.
+	go a.runBootOnce()
+
 	a.logger.Info("GoClaw Copilot started successfully")
 	return nil
+}
+
+// runBootOnce executes BOOT.md instructions once after startup.
+// If BOOT.md exists in the workspace, its content is fed to the agent as a
+// startup command. This enables proactive behaviors like "check emails" or
+// "review today's calendar" on boot.
+func (a *Assistant) runBootOnce() {
+	// Short delay to let channels stabilize (like OpenClaw's 250ms hook delay).
+	time.Sleep(500 * time.Millisecond)
+
+	// Search for BOOT.md in the workspace directories.
+	searchDirs := []string{"."}
+	if a.config.Heartbeat.WorkspaceDir != "" && a.config.Heartbeat.WorkspaceDir != "." {
+		searchDirs = append([]string{a.config.Heartbeat.WorkspaceDir}, searchDirs...)
+	}
+	searchDirs = append(searchDirs, "configs")
+
+	var bootContent string
+	for _, dir := range searchDirs {
+		data, err := os.ReadFile(filepath.Join(dir, "BOOT.md"))
+		if err == nil && len(strings.TrimSpace(string(data))) > 0 {
+			bootContent = strings.TrimSpace(string(data))
+			break
+		}
+	}
+
+	if bootContent == "" {
+		return
+	}
+
+	a.logger.Info("executing BOOT.md startup instructions")
+
+	// Create a dedicated session for boot.
+	session := a.sessionStore.GetOrCreate("system", "boot")
+	prompt := a.promptComposer.Compose(session, bootContent)
+
+	agent := NewAgentRunWithConfig(a.llmClient, a.toolExecutor, a.config.Agent, a.logger)
+	result, err := agent.Run(a.ctx, prompt, nil, bootContent)
+	if err != nil {
+		a.logger.Error("BOOT.md execution failed", "error", err)
+		return
+	}
+
+	session.AddMessage(bootContent, result)
+	a.logger.Info("BOOT.md execution completed",
+		"result_preview", truncate(result, 200),
+	)
 }
 
 // Stop gracefully shuts down all subsystems.
@@ -250,6 +364,13 @@ func (a *Assistant) Stop() {
 	}
 	a.channelMgr.Stop()
 	a.skillRegistry.ShutdownAll()
+
+	// Close SQLite memory store.
+	if a.sqliteMemory != nil {
+		if err := a.sqliteMemory.Close(); err != nil {
+			a.logger.Warn("error closing SQLite memory", "error", err)
+		}
+	}
 
 	a.logger.Info("GoClaw Copilot stopped")
 }
@@ -443,8 +564,19 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 	// ── Step 7: Build prompt with workspace context ──
 	prompt := a.composeWorkspacePrompt(workspace, session, userContent)
 
-	// ── Step 8: Execute agent ──
-	response := a.executeAgent(a.ctx, workspace.ID, session, prompt, userContent)
+	// ── Step 8: Execute agent (with optional block streaming) ──
+	bsCfg := a.config.BlockStream.Effective()
+	var blockStreamer *BlockStreamer
+	if bsCfg.Enabled {
+		blockStreamer = NewBlockStreamer(bsCfg, a.channelMgr, msg.Channel, msg.ChatID, msg.ID)
+	}
+
+	response := a.executeAgentWithStream(a.ctx, workspace.ID, session, prompt, userContent, blockStreamer)
+
+	// Finalize the block streamer (flush remaining text).
+	if blockStreamer != nil {
+		blockStreamer.Finish()
+	}
 
 	// ── Step 9: Validate output ──
 	if err := a.outputGuard.Validate(response); err != nil {
@@ -458,8 +590,10 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 	// ── Step 10b: Check if session needs compaction ──
 	a.maybeCompactSession(session)
 
-	// ── Step 11: Send reply ──
-	a.sendReply(msg, response)
+	// ── Step 11: Send reply (skip if block streamer already sent everything) ──
+	if blockStreamer == nil || !blockStreamer.HasSentBlocks() {
+		a.sendReply(msg, response)
+	}
 
 	logger.Info("message processed",
 		"duration_ms", time.Since(start).Milliseconds(),
@@ -499,6 +633,56 @@ func (a *Assistant) composeWorkspacePrompt(ws *Workspace, session *Session, inpu
 	}
 
 	return a.promptComposer.Compose(session, input)
+}
+
+// executeAgentWithStream runs the agentic loop, optionally streaming text
+// progressively to the channel via a BlockStreamer.
+func (a *Assistant) executeAgentWithStream(ctx context.Context, workspaceID string, session *Session, systemPrompt string, userMessage string, streamer *BlockStreamer) string {
+	runKey := workspaceID + ":" + session.ID
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer func() {
+		a.activeRunsMu.Lock()
+		delete(a.activeRuns, runKey)
+		a.activeRunsMu.Unlock()
+		cancel()
+	}()
+
+	a.activeRunsMu.Lock()
+	a.activeRuns[runKey] = cancel
+	a.activeRunsMu.Unlock()
+
+	history := session.RecentHistory(20)
+
+	modelOverride := session.GetConfig().Model
+	agent := NewAgentRunWithConfig(a.llmClient, a.toolExecutor, a.config.Agent, a.logger)
+	agent.SetModelOverride(modelOverride)
+
+	// Wire block streaming if provided.
+	if streamer != nil {
+		agent.SetStreamCallback(streamer.StreamCallback())
+	}
+
+	if a.usageTracker != nil {
+		agent.SetUsageRecorder(func(model string, usage LLMUsage) {
+			a.usageTracker.Record(session.ID, model, usage)
+		})
+	}
+
+	response, usage, err := agent.RunWithUsage(runCtx, systemPrompt, history, userMessage)
+	if err != nil {
+		if runCtx.Err() != nil {
+			return "Agent stopped."
+		}
+		a.logger.Error("agent failed", "error", err)
+		return fmt.Sprintf("Sorry, I encountered an error: %v", err)
+	}
+
+	if usage != nil {
+		session.AddTokenUsage(usage.PromptTokens, usage.CompletionTokens)
+	}
+
+	return response
 }
 
 // executeAgent runs the agentic loop with tool use support.
@@ -578,6 +762,11 @@ func (a *Assistant) SchedulerEnabled() bool {
 // MemoryEnabled returns true if the memory store is available.
 func (a *Assistant) MemoryEnabled() bool {
 	return a.memoryStore != nil
+}
+
+// SQLiteMemory returns the SQLite memory store (for advanced search), or nil.
+func (a *Assistant) SQLiteMemory() *memory.SQLiteStore {
+	return a.sqliteMemory
 }
 
 // SessionStore returns the session store (used by CLI chat).
@@ -753,7 +942,7 @@ func (a *Assistant) registerSystemTools() {
 	dataDir = filepath.Dir(dataDir)
 
 	ssrfGuard := security.NewSSRFGuard(a.config.Security.SSRF, a.logger)
-	RegisterSystemTools(a.toolExecutor, sandboxRunner, a.memoryStore, a.scheduler, dataDir, ssrfGuard)
+	RegisterSystemTools(a.toolExecutor, sandboxRunner, a.memoryStore, a.sqliteMemory, a.config.Memory, a.scheduler, dataDir, ssrfGuard)
 
 	// Register skill creator tools (including install_skill, search_skills, remove_skill).
 	skillsDir := "./skills"
@@ -1015,6 +1204,96 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// summarizeAndSaveSessionFromHistory uses the LLM to summarize a pre-captured
+// history snapshot and saves it to memory/YYYY-MM-DD-slug.md (like OpenClaw's
+// session-memory hook). The history must be captured before session.ClearHistory()
+// to avoid race conditions.
+func (a *Assistant) summarizeAndSaveSessionFromHistory(history []ConversationEntry) {
+	if len(history) < 2 {
+		return // Too short to summarize.
+	}
+
+	// Build a conversation transcript for the LLM.
+	var transcript strings.Builder
+	for _, entry := range history {
+		transcript.WriteString(fmt.Sprintf("User: %s\nAssistant: %s\n\n",
+			truncate(entry.UserMessage, 500),
+			truncate(entry.AssistantResponse, 1000),
+		))
+	}
+
+	prompt := `Summarize this conversation in 2-5 bullet points. Focus on key decisions, facts learned, and tasks completed. Be concise. Output only the bullet points, no preamble.
+
+Conversation:
+` + transcript.String()
+
+	ctx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
+	defer cancel()
+
+	agent := NewAgentRun(a.llmClient, a.toolExecutor, a.logger)
+	summary, err := agent.Run(ctx, "You are a conversation summarizer. Output only concise bullet points.", nil, prompt)
+	if err != nil {
+		a.logger.Warn("session summary generation failed", "error", err)
+		return
+	}
+
+	// Generate a slug from the first few words of the summary.
+	slug := generateSlug(summary, 5)
+	now := time.Now()
+	filename := fmt.Sprintf("%s-%s.md", now.Format("2006-01-02"), slug)
+
+	// Write to memory directory.
+	memDir := filepath.Join(filepath.Dir(a.config.Memory.Path), "memory")
+	_ = os.MkdirAll(memDir, 0o755)
+
+	content := fmt.Sprintf("# Session Summary — %s\n\n%s\n",
+		now.Format("2006-01-02 15:04"), summary)
+
+	filePath := filepath.Join(memDir, filename)
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+		a.logger.Warn("failed to save session summary", "path", filePath, "error", err)
+		return
+	}
+
+	a.logger.Info("session summary saved", "path", filePath)
+
+	// Re-index if SQLite memory is available.
+	if a.sqliteMemory != nil && a.config.Memory.Index.Auto {
+		chunkCfg := memory.ChunkConfig{MaxTokens: a.config.Memory.Index.ChunkMaxTokens, Overlap: 100}
+		if chunkCfg.MaxTokens <= 0 {
+			chunkCfg.MaxTokens = 500
+		}
+		_ = a.sqliteMemory.IndexMemoryDir(a.ctx, memDir, chunkCfg)
+	}
+}
+
+// generateSlug creates a URL-safe slug from the first n words of text.
+func generateSlug(text string, maxWords int) string {
+	words := strings.Fields(text)
+	if len(words) > maxWords {
+		words = words[:maxWords]
+	}
+	slug := strings.Join(words, "-")
+	slug = strings.ToLower(slug)
+
+	// Keep only alphanumeric and hyphens.
+	var clean strings.Builder
+	for _, r := range slug {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			clean.WriteRune(r)
+		}
+	}
+
+	result := clean.String()
+	if len(result) > 40 {
+		result = result[:40]
+	}
+	if result == "" {
+		result = "session"
+	}
+	return strings.TrimRight(result, "-")
 }
 
 // sendReply sends a response to the original message's channel.

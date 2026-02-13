@@ -2,6 +2,83 @@
 
 All notable changes to GoClaw are documented in this file.
 
+## [1.1.0] — 2026-02-12
+
+### Performance
+
+- Increased default agent turn timeout from 90s to 300s to handle slow model cold starts (e.g. GLM-5 ~30-60s first turn)
+- Added transient error retry (1x, 2.5s delay) for streaming LLM calls before falling back to non-streaming
+- Bootstrap file loading now uses in-memory SHA-256 cache to avoid redundant disk reads
+
+### Progressive Message Delivery (Block Streaming)
+
+- New `BlockStreamer` module: accumulates LLM output tokens and sends them progressively to channels (WhatsApp) as partial messages
+- Configurable: `block_stream.enabled`, `block_stream.min_chars` (default: 80), `block_stream.idle_ms` (default: 1200), `block_stream.max_chars` (default: 3000)
+- Natural break detection: splits at paragraph boundaries, sentence endings, or list items
+- Avoids duplicate final messages when blocks have already been sent
+
+### Advanced Memory System
+
+- **SQLite-backed memory store** with FTS5 (BM25 ranking) and in-process vector search (cosine similarity)
+- **Embedding provider**: OpenAI `text-embedding-3-small` (1536 dims) with SQLite-backed embedding cache to reduce API calls
+- **Markdown chunker**: intelligent splitting by headings, paragraphs, and sentences with configurable overlap and max tokens
+- **Delta sync**: hash-based change detection — only re-embeds chunks that actually changed
+- **Hybrid search** (RRF): combines vector similarity and BM25 keyword scores with configurable weights (default: 0.7 vector / 0.3 BM25)
+- **Session memory hook**: on `/new` command, summarizes the conversation via LLM and saves to `memory/YYYY-MM-DD-slug.md`
+- New `memory_index` tool for manual re-indexing of memory files
+- `memory_search` upgraded to use hybrid search when SQLite store is available (falls back to substring search)
+- Configurable via `memory.embedding`, `memory.search`, `memory.index`, `memory.session_memory` in config.yaml
+
+### Bootstrap Improvements
+
+- `BOOT.md` support: agent executes instructions from `BOOT.md` after startup (proactive initialization)
+- `BootstrapMaxChars` limit prevents oversized bootstrap from consuming the token budget
+- Subagent-specific filtering: subagents only load `AGENTS.md` and `TOOLS.md` (not the full bootstrap set)
+
+### Session Persistence
+
+- `SessionPersistence` properly wired to session store — conversations now survive restarts
+- JSONL history, facts, and metadata are loaded on startup and saved on changes
+
+### Bug Fixes
+
+- Fixed race condition in `/new` command where session history could be cleared before the summary goroutine reads it (now captures a snapshot first)
+- Fixed hybrid search merge key collision: different chunks from the same file that share a prefix are no longer collapsed
+- Fixed FTS5 query injection: user input is now sanitized and wrapped in double quotes for phrase matching
+- Fixed potential SQL row leak in `IndexChunks` error path
+
+### New Config Options
+
+```yaml
+block_stream:
+  enabled: false
+  min_chars: 80
+  idle_ms: 1200
+  max_chars: 3000
+
+memory:
+  embedding:
+    provider: openai
+    model: text-embedding-3-small
+    dimensions: 1536
+    batch_size: 20
+  search:
+    hybrid_weight_vector: 0.7
+    hybrid_weight_bm25: 0.3
+    max_results: 6
+    min_score: 0.1
+  index:
+    auto: true
+    chunk_max_tokens: 500
+  session_memory:
+    enabled: false
+    messages: 15
+```
+
+### Dependencies
+
+- Added `github.com/mattn/go-sqlite3` (SQLite driver with FTS5 support)
+
 ## [1.0.0] — 2026-02-12
 
 First stable release.

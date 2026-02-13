@@ -4,6 +4,7 @@ package copilot
 
 import (
 	"github.com/jholhewres/goclaw/pkg/goclaw/channels/whatsapp"
+	"github.com/jholhewres/goclaw/pkg/goclaw/copilot/memory"
 	"github.com/jholhewres/goclaw/pkg/goclaw/copilot/security"
 	"github.com/jholhewres/goclaw/pkg/goclaw/plugins"
 	"github.com/jholhewres/goclaw/pkg/goclaw/sandbox"
@@ -85,6 +86,10 @@ type Config struct {
 
 	// Gateway configures the HTTP API gateway.
 	Gateway GatewayConfig `yaml:"gateway"`
+
+	// BlockStream configures progressive message delivery (stream text to channel
+	// in chunks instead of waiting for the complete response).
+	BlockStream BlockStreamConfig `yaml:"block_stream"`
 }
 
 // GatewayConfig configures the HTTP API gateway.
@@ -242,7 +247,8 @@ type ChannelsConfig struct {
 
 // MemoryConfig configures the memory and persistence system.
 type MemoryConfig struct {
-	// Type is the storage type ("sqlite", "postgres", "memory").
+	// Type is the storage type ("sqlite", "file").
+	// "sqlite" enables FTS5 + vector search; "file" is the legacy fallback.
 	Type string `yaml:"type"`
 
 	// Path is the database file path (for sqlite).
@@ -254,6 +260,51 @@ type MemoryConfig struct {
 	// CompressionStrategy defines memory compression
 	// ("summarize", "truncate", "semantic").
 	CompressionStrategy string `yaml:"compression_strategy"`
+
+	// Embedding configures the embedding provider for semantic search.
+	Embedding memory.EmbeddingConfig `yaml:"embedding"`
+
+	// Search configures hybrid search behavior.
+	Search SearchConfig `yaml:"search"`
+
+	// Index configures automatic indexing.
+	Index IndexConfig `yaml:"index"`
+
+	// SessionMemory configures automatic session summarization.
+	SessionMemory SessionMemoryConfig `yaml:"session_memory"`
+}
+
+// SearchConfig configures hybrid search behavior.
+type SearchConfig struct {
+	// HybridWeightVector is the weight for vector search (default: 0.7).
+	HybridWeightVector float64 `yaml:"hybrid_weight_vector"`
+
+	// HybridWeightBM25 is the weight for BM25 keyword search (default: 0.3).
+	HybridWeightBM25 float64 `yaml:"hybrid_weight_bm25"`
+
+	// MaxResults is the max results returned (default: 6).
+	MaxResults int `yaml:"max_results"`
+
+	// MinScore is the minimum score threshold (default: 0.1).
+	MinScore float64 `yaml:"min_score"`
+}
+
+// IndexConfig configures automatic memory indexing.
+type IndexConfig struct {
+	// Auto enables automatic re-indexing on file changes (default: true).
+	Auto bool `yaml:"auto"`
+
+	// ChunkMaxTokens is the max tokens per chunk (default: 500).
+	ChunkMaxTokens int `yaml:"chunk_max_tokens"`
+}
+
+// SessionMemoryConfig configures automatic session summarization.
+type SessionMemoryConfig struct {
+	// Enabled turns session memory on/off (default: false).
+	Enabled bool `yaml:"enabled"`
+
+	// Messages is the number of recent messages to include in summaries (default: 15).
+	Messages int `yaml:"messages"`
 }
 
 // SecurityConfig configures security guardrails.
@@ -299,6 +350,10 @@ type TokenBudgetConfig struct {
 	Memory   int `yaml:"memory"`
 	History  int `yaml:"history"`
 	Tools    int `yaml:"tools"`
+
+	// BootstrapMaxChars is the max total characters for all bootstrap files
+	// combined (SOUL.md, IDENTITY.md, etc.). Default: 20000 (~5K tokens).
+	BootstrapMaxChars int `yaml:"bootstrap_max_chars"`
 }
 
 // SkillsConfig configures the skills system.
@@ -353,6 +408,21 @@ func DefaultConfig() *Config {
 			Path:                "./data/memory.db",
 			MaxMessages:         100,
 			CompressionStrategy: "summarize",
+			Embedding:           memory.DefaultEmbeddingConfig(),
+			Search: SearchConfig{
+				HybridWeightVector: 0.7,
+				HybridWeightBM25:   0.3,
+				MaxResults:         6,
+				MinScore:           0.1,
+			},
+			Index: IndexConfig{
+				Auto:           true,
+				ChunkMaxTokens: 500,
+			},
+			SessionMemory: SessionMemoryConfig{
+				Enabled:  false,
+				Messages: 15,
+			},
 		},
 		Security: SecurityConfig{
 			MaxInputLength:      4096,
@@ -398,5 +468,6 @@ func DefaultConfig() *Config {
 			Enabled: false,
 			Address: ":8080",
 		},
+		BlockStream: DefaultBlockStreamConfig(),
 	}
 }
