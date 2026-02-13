@@ -1,6 +1,6 @@
-// Package channels define as interfaces e tipos para canais de comunicação
-// do AgentGo Copilot. Cada canal (WhatsApp, Discord, Telegram) implementa
-// a interface Channel para receber e enviar mensagens de forma unificada.
+// Package channels defines the interfaces and types for GoClaw communication
+// channels. Each channel (WhatsApp, Discord, Telegram) implements the Channel
+// interface to receive and send messages in a unified way.
 package channels
 
 import (
@@ -9,110 +9,266 @@ import (
 	"time"
 )
 
-// Channel define a interface genérica que todo canal de comunicação deve implementar.
-// Canais são responsáveis por conectar, enviar e receber mensagens de plataformas externas.
+// MessageType identifies the kind of message content.
+type MessageType string
+
+const (
+	MessageText     MessageType = "text"
+	MessageImage    MessageType = "image"
+	MessageAudio    MessageType = "audio"
+	MessageVideo    MessageType = "video"
+	MessageDocument MessageType = "document"
+	MessageSticker  MessageType = "sticker"
+	MessageLocation MessageType = "location"
+	MessageContact  MessageType = "contact"
+	MessageReaction MessageType = "reaction"
+)
+
+// Channel defines the interface that every communication channel must implement.
 type Channel interface {
-	// Name retorna o identificador do canal (ex: "whatsapp", "discord", "telegram").
+	// Name returns the channel identifier (e.g. "whatsapp", "discord").
 	Name() string
 
-	// Connect estabelece a conexão com a plataforma de mensagens.
-	// Deve ser chamado antes de Send/Receive. Retorna erro se a conexão falhar.
+	// Connect establishes the connection to the messaging platform.
 	Connect(ctx context.Context) error
 
-	// Disconnect encerra a conexão de forma graciosa, finalizando goroutines e liberando recursos.
+	// Disconnect gracefully closes the connection.
 	Disconnect() error
 
-	// Send envia uma mensagem para o destinatário especificado.
+	// Send sends a message to the specified recipient.
 	Send(ctx context.Context, to string, message *OutgoingMessage) error
 
-	// Receive retorna um channel Go que emite mensagens recebidas.
-	// O channel é fechado quando Disconnect é chamado.
+	// Receive returns a Go channel that emits incoming messages.
 	Receive() <-chan *IncomingMessage
 
-	// IsConnected retorna true se o canal está conectado e funcional.
+	// IsConnected returns true if the channel is connected.
 	IsConnected() bool
 
-	// Health retorna o estado de saúde do canal para monitoramento.
+	// Health returns the channel health status.
 	Health() HealthStatus
 }
 
-// IncomingMessage representa uma mensagem recebida de qualquer canal.
+// MediaChannel extends Channel with media capabilities.
+// Channels that support media (images, audio, video, documents) should
+// implement this interface.
+type MediaChannel interface {
+	Channel
+
+	// SendMedia sends a media message (image, audio, video, document).
+	SendMedia(ctx context.Context, to string, media *MediaMessage) error
+
+	// DownloadMedia downloads media from an incoming message.
+	// Returns the raw bytes and MIME type.
+	DownloadMedia(ctx context.Context, msg *IncomingMessage) ([]byte, string, error)
+}
+
+// PresenceChannel extends Channel with typing/presence indicators.
+type PresenceChannel interface {
+	Channel
+
+	// SendTyping sends a "typing..." indicator to the recipient.
+	SendTyping(ctx context.Context, to string) error
+
+	// SendPresence updates the bot's presence status.
+	SendPresence(ctx context.Context, available bool) error
+
+	// MarkRead marks a message as read.
+	MarkRead(ctx context.Context, chatID string, messageIDs []string) error
+}
+
+// ReactionChannel extends Channel with message reaction support.
+type ReactionChannel interface {
+	Channel
+
+	// SendReaction sends a reaction emoji to a specific message.
+	SendReaction(ctx context.Context, chatID, messageID, emoji string) error
+}
+
+// IncomingMessage represents a message received from any channel.
 type IncomingMessage struct {
-	// ID é o identificador único da mensagem no canal de origem.
+	// ID is the unique message identifier in the source channel.
 	ID string
 
-	// Channel identifica o canal de origem (ex: "whatsapp", "discord").
+	// Channel identifies the source channel (e.g. "whatsapp").
 	Channel string
 
-	// From é o identificador do remetente na plataforma.
+	// From is the sender identifier on the platform.
 	From string
 
-	// ChatID é o identificador do grupo ou DM onde a mensagem foi enviada.
+	// FromName is the sender display name (if available).
+	FromName string
+
+	// ChatID is the group or DM identifier.
 	ChatID string
 
-	// Content é o conteúdo textual da mensagem.
+	// IsGroup indicates whether the message is from a group chat.
+	IsGroup bool
+
+	// Type is the message content type.
+	Type MessageType
+
+	// Content is the text content of the message.
 	Content string
 
-	// Timestamp é o momento em que a mensagem foi enviada.
+	// Timestamp is when the message was sent.
 	Timestamp time.Time
 
-	// ReplyTo contém o ID da mensagem sendo respondida, se aplicável.
+	// ReplyTo contains the ID of the message being replied to.
 	ReplyTo string
 
-	// Metadata contém dados adicionais específicos do canal.
+	// QuotedContent is the text of the quoted message (if replying).
+	QuotedContent string
+
+	// Media contains media attachment details (if any).
+	Media *MediaInfo
+
+	// Location contains location data (if MessageLocation).
+	Location *LocationInfo
+
+	// Contact contains contact data (if MessageContact).
+	Contact *ContactInfo
+
+	// Reaction contains reaction data (if MessageReaction).
+	Reaction *ReactionInfo
+
+	// Metadata contains additional channel-specific data.
 	Metadata map[string]any
 }
 
-// OutgoingMessage representa uma mensagem a ser enviada por um canal.
+// OutgoingMessage represents a message to be sent through a channel.
 type OutgoingMessage struct {
-	// Content é o conteúdo textual da mensagem.
+	// Content is the text content of the message.
 	Content string
 
-	// ReplyTo contém o ID da mensagem a ser respondida, se aplicável.
+	// ReplyTo contains the ID of the message to reply to.
 	ReplyTo string
 
-	// Metadata contém dados adicionais específicos do canal.
+	// Metadata contains additional channel-specific data.
 	Metadata map[string]any
 }
 
-// HealthStatus representa o estado de saúde de um canal.
+// MediaMessage represents a media file to be sent.
+type MediaMessage struct {
+	// Type is the media type (image, audio, video, document, sticker).
+	Type MessageType
+
+	// Data is the raw media bytes. Either Data or URL must be set.
+	Data []byte
+
+	// URL is a URL to the media file. Either Data or URL must be set.
+	URL string
+
+	// MimeType is the MIME type (e.g. "image/jpeg", "audio/ogg").
+	MimeType string
+
+	// Filename is the original filename (for documents).
+	Filename string
+
+	// Caption is the text caption accompanying the media.
+	Caption string
+
+	// Duration is the duration in seconds (for audio/video).
+	Duration uint32
+
+	// Width is the media width in pixels (for images/video).
+	Width uint32
+
+	// Height is the media height in pixels (for images/video).
+	Height uint32
+
+	// ReplyTo contains the ID of the message to reply to.
+	ReplyTo string
+}
+
+// MediaInfo describes media attached to an incoming message.
+type MediaInfo struct {
+	// Type is the media type.
+	Type MessageType
+
+	// MimeType is the MIME type of the media.
+	MimeType string
+
+	// Filename is the original filename (for documents).
+	Filename string
+
+	// FileSize is the size in bytes.
+	FileSize uint64
+
+	// Caption is the media caption text.
+	Caption string
+
+	// Duration is the duration in seconds (audio/video).
+	Duration uint32
+
+	// Width is the width in pixels (images/video).
+	Width uint32
+
+	// Height is the height in pixels (images/video).
+	Height uint32
+
+	// URL is a direct download URL (if available).
+	URL string
+
+	// DirectPath is the platform-specific media path (for whatsapp).
+	DirectPath string
+
+	// MediaKey is the encryption key for the media (for whatsapp).
+	MediaKey []byte
+
+	// FileSHA256 is the SHA256 hash of the file.
+	FileSHA256 []byte
+
+	// FileEncSHA256 is the SHA256 hash of the encrypted file.
+	FileEncSHA256 []byte
+}
+
+// LocationInfo contains location coordinates.
+type LocationInfo struct {
+	Latitude    float64
+	Longitude   float64
+	Name        string
+	Address     string
+	URL         string
+	AccuracyM   uint32
+}
+
+// ContactInfo contains shared contact data.
+type ContactInfo struct {
+	DisplayName string
+	VCard       string
+	Phone       string
+}
+
+// ReactionInfo contains reaction emoji data.
+type ReactionInfo struct {
+	Emoji     string
+	MessageID string // The message being reacted to.
+	From      string
+	Remove    bool // True if the reaction is being removed.
+}
+
+// HealthStatus represents the health state of a channel.
 type HealthStatus struct {
-	// Connected indica se o canal está conectado.
-	Connected bool
-
-	// LastMessageAt é o timestamp da última mensagem processada.
+	Connected     bool
 	LastMessageAt time.Time
-
-	// ErrorCount é o número de erros acumulados desde a última reconexão.
-	ErrorCount int
-
-	// Latency é a latência média de envio em milissegundos.
-	LatencyMs int64
-
-	// Details contém informações adicionais de diagnóstico.
-	Details map[string]any
+	ErrorCount    int
+	LatencyMs     int64
+	Details       map[string]any
 }
 
-// ChannelConfig contém configurações comuns a todos os canais.
+// ChannelConfig contains common configuration for all channels.
 type ChannelConfig struct {
-	// Enabled indica se o canal está habilitado.
-	Enabled bool `mapstructure:"enabled"`
-
-	// Trigger é a palavra-chave que ativa o copilot (ex: "@copilot").
-	Trigger string `mapstructure:"trigger"`
-
-	// MaxRetries é o número máximo de tentativas de reconexão.
-	MaxRetries int `mapstructure:"max_retries"`
-
-	// RetryBackoffMs é o intervalo base entre tentativas em milissegundos.
-	RetryBackoffMs int `mapstructure:"retry_backoff_ms"`
+	Enabled        bool   `yaml:"enabled"`
+	Trigger        string `yaml:"trigger"`
+	MaxRetries     int    `yaml:"max_retries"`
+	RetryBackoffMs int    `yaml:"retry_backoff_ms"`
 }
 
-// ErrChannelDisconnected indica que o canal não está conectado.
-var ErrChannelDisconnected = fmt.Errorf("channel is not connected")
-
-// ErrSendFailed indica falha no envio da mensagem.
-var ErrSendFailed = fmt.Errorf("failed to send message")
-
-// ErrConnectionFailed indica falha na conexão com o canal.
-var ErrConnectionFailed = fmt.Errorf("failed to connect to channel")
+// Errors.
+var (
+	ErrChannelDisconnected = fmt.Errorf("channel is not connected")
+	ErrSendFailed          = fmt.Errorf("failed to send message")
+	ErrConnectionFailed    = fmt.Errorf("failed to connect to channel")
+	ErrMediaNotSupported   = fmt.Errorf("media not supported by this channel")
+	ErrMediaDownloadFailed = fmt.Errorf("failed to download media")
+)
