@@ -1,51 +1,89 @@
-# AgentGo Copilot - Configuração
-# Copie este arquivo para config.yaml e ajuste conforme necessário.
+# ─────────────────────────────────────────────────────────────
+# GoClaw Copilot - Configuration
+# Copy to config.yaml and adjust as needed:
+#   cp configs/copilot.example.yaml config.yaml
+# ─────────────────────────────────────────────────────────────
 
-assistant:
-  name: "Copilot"
-  trigger: "@copilot"
-  model: "gpt-4o-mini"
-  timezone: "America/Sao_Paulo"
-  language: "pt-BR"
-  instructions: |
-    You are a helpful personal assistant.
-    Be concise and practical in your responses.
-    Respond in Portuguese when the user writes in Portuguese.
+# ── Assistant ──────────────────────────────────────────────
+name: "Copilot"
+trigger: "@copilot"                    # Keyword that activates the bot
+model: "gpt-4o-mini"                   # LLM model
+timezone: "America/Sao_Paulo"
+language: "pt-BR"
+instructions: |
+  You are a helpful personal assistant.
+  Be concise and practical in your responses.
+  Respond in Portuguese when the user writes in Portuguese.
 
-# Canais de comunicação
+# ── Access Control ─────────────────────────────────────────
+# Who can use the bot. Default: deny (only authorized contacts).
+access:
+  default_policy: deny                 # deny | allow | ask
+  owners:                              # Full control (your phone number)
+    - "5511999999999"
+  admins: []                           # Can manage users + workspaces
+  allowed_users: []                    # Can interact with the bot
+  blocked_users: []                    # Explicitly blocked
+  allowed_groups: []                   # Group JIDs allowed
+  blocked_groups: []                   # Group JIDs blocked
+  pending_message: "Access not authorized. Contact an admin."
+
+# ── Workspaces ─────────────────────────────────────────────
+# Isolated profiles: each has its own prompt, skills, model, memory.
+workspaces:
+  default_workspace: "default"
+  workspaces:
+    - id: "default"
+      name: "Default"
+      description: "Default workspace for all users"
+      active: true
+
+    # Uncomment and customize:
+    #
+    # - id: "personal"
+    #   name: "Personal"
+    #   instructions: |
+    #     You are my personal assistant. Help with daily tasks.
+    #   model: "gpt-4o"
+    #   language: "pt-BR"
+    #   skills: [weather, web-search, gog]
+    #   members: ["5511999999999"]
+    #
+    # - id: "work"
+    #   name: "Work Team"
+    #   instructions: |
+    #     You are a technical assistant for our dev team.
+    #   skills: [github, web-search, summarize]
+    #   members: ["5511888888888"]
+    #   groups: ["120363000000000000@g.us"]
+
+# ── Channels ───────────────────────────────────────────────
 channels:
   whatsapp:
-    enabled: true
     session_dir: "./sessions/whatsapp"
     trigger: "@copilot"
-  discord:
-    enabled: false
-    token: ""
-    guild_id: ""
-  telegram:
-    enabled: false
-    token: ""
+    respond_to_groups: true
+    respond_to_dms: true
+    auto_read: true
+    send_typing: true
+    media_dir: "./data/media"
+    max_media_size_mb: 16
 
-# Memória e persistência
+# ── Memory ─────────────────────────────────────────────────
 memory:
   type: "sqlite"
   path: "./data/memory.db"
   max_messages: 100
-  compression_strategy: "summarize"  # summarize, truncate, semantic
+  compression_strategy: "summarize"
 
-# Segurança
+# ── Security ───────────────────────────────────────────────
 security:
   max_input_length: 4096
-  rate_limit: 30  # mensagens por minuto por usuário
+  rate_limit: 30
   enable_pii_detection: false
   enable_url_validation: true
 
-# Scheduler
-scheduler:
-  enabled: true
-  storage: "./data/scheduler.db"
-
-# Token budget (ajuste conforme o modelo)
+# ── Token Budget ───────────────────────────────────────────
 token_budget:
   total: 128000
   reserved: 4096
@@ -55,42 +93,21 @@ token_budget:
   history: 8000
   tools: 4000
 
-# Plugins (Go native .so)
+# ── Plugins ────────────────────────────────────────────────
 plugins:
   dir: "./plugins"
 
-# Skills
+# ── Skills ─────────────────────────────────────────────────
 skills:
-  builtin:
-    - weather
-    - calculator
-    - web-search
-    - web-fetch
-  installed:
-    - github
-    - gog
-    - summarize
-  clawdhub_dirs:          # Directories with ClawdHub SKILL.md skills
-    # - "./skills/clawdhub"
+  builtin: [weather, calculator, web-search, web-fetch]
+  installed: [github, gog, summarize]
 
-# Script sandbox (for Python/Node.js/Shell skills)
-sandbox:
-  default_isolation: restricted   # none, restricted, container
-  timeout: 60s
-  max_memory_mb: 256
-  max_cpu_percent: 50
-  max_output_bytes: 1048576       # 1MB
-  allow_network: false
-  runtimes:
-    python: python3
-    node: node
-    shell: /bin/sh
-  docker:
-    image: goclaw-sandbox:latest
-    build_on_start: true          # Auto-build if missing
-    network: none                 # No network by default
+# ── Scheduler ──────────────────────────────────────────────
+scheduler:
+  enabled: true
+  storage: "./data/scheduler.db"
 
-# Logging
+# ── Logging ────────────────────────────────────────────────
 logging:
-  level: "info"  # debug, info, warn, error
-  format: "json"  # json, text
+  level: "info"                        # debug | info | warn | error
+  format: "json"                       # json | text
