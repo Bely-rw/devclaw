@@ -43,6 +43,9 @@ Thumbs.db
 /HEARTBEAT.md
 /MEMORY.md
 
+# User-installed skills (customized — templates/builtins are in pkg/goclaw/skills/)
+/skills/
+
 # Config with secrets
 config.yaml
 config.local.yaml
