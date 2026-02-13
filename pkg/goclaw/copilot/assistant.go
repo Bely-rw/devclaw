@@ -86,6 +86,9 @@ type Assistant struct {
 	// usageTracker records token usage and estimated costs per session.
 	usageTracker *UsageTracker
 
+	// vault provides encrypted secret storage (nil if unavailable/locked).
+	vault *Vault
+
 	// configMu protects hot-reloadable config fields.
 	configMu sync.RWMutex
 
@@ -404,6 +407,16 @@ func (a *Assistant) ApplyConfigUpdate(newCfg *Config) {
 // ChannelManager returns the channel manager for external registration.
 func (a *Assistant) ChannelManager() *channels.Manager {
 	return a.channelMgr
+}
+
+// SetVault sets the unlocked vault for the assistant (enables vault tools).
+func (a *Assistant) SetVault(v *Vault) {
+	a.vault = v
+}
+
+// Vault returns the vault instance (may be nil if unavailable).
+func (a *Assistant) Vault() *Vault {
+	return a.vault
 }
 
 // AccessManager returns the access manager.
@@ -947,7 +960,7 @@ func (a *Assistant) registerSystemTools() {
 	dataDir = filepath.Dir(dataDir)
 
 	ssrfGuard := security.NewSSRFGuard(a.config.Security.SSRF, a.logger)
-	RegisterSystemTools(a.toolExecutor, sandboxRunner, a.memoryStore, a.sqliteMemory, a.config.Memory, a.scheduler, dataDir, ssrfGuard)
+	RegisterSystemTools(a.toolExecutor, sandboxRunner, a.memoryStore, a.sqliteMemory, a.config.Memory, a.scheduler, dataDir, ssrfGuard, a.vault)
 
 	// Register skill creator tools (including install_skill, search_skills, remove_skill).
 	skillsDir := "./skills"

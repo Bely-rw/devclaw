@@ -67,7 +67,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// ── Resolve secrets ──
 	copilot.AuditSecrets(cfg, logger)
-	copilot.ResolveAPIKey(cfg, logger)
+	vault := copilot.ResolveAPIKey(cfg, logger)
 
 	if cfg.API.APIKey == "" || copilot.IsEnvReference(cfg.API.APIKey) {
 		return fmt.Errorf("no API key configured. Run: copilot config vault-set")
@@ -75,6 +75,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// ── Create and start assistant ──
 	assistant := copilot.New(cfg, logger)
+	if vault != nil {
+		assistant.SetVault(vault)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

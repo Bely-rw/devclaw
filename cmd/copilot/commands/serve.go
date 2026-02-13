@@ -63,10 +63,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Audit BEFORE resolving — checks the raw config values for hardcoded keys.
 	copilot.AuditSecrets(cfg, logger)
 	// Resolve from vault → keyring → env → config.
-	copilot.ResolveAPIKey(cfg, logger)
+	// Returns unlocked vault (if available) for agent vault tools.
+	vault := copilot.ResolveAPIKey(cfg, logger)
 
 	// ── Create assistant ──
 	assistant := copilot.New(cfg, logger)
+	if vault != nil {
+		assistant.SetVault(vault)
+	}
 
 	// ── Create context ──
 	ctx, cancel := context.WithCancel(context.Background())

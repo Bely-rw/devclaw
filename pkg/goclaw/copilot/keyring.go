@@ -61,15 +61,27 @@ func KeyringAvailable() bool {
 // ResolveAPIKey resolves the API key using the priority chain:
 // vault → keyring → env var → config value.
 // Also updates the config in-place with the resolved value.
-// If a vault exists but is locked, it prompts for the master password.
-func ResolveAPIKey(cfg *Config, logger *slog.Logger) {
+// If a vault exists but is locked, it prompts for the master password
+// (or uses GOCLAW_VAULT_PASSWORD env var for non-interactive mode).
+// Returns the unlocked vault (or nil if unavailable) so it can be reused
+// by the assistant for agent vault tools.
+func ResolveAPIKey(cfg *Config, logger *slog.Logger) *Vault {
 	// 1. Try encrypted vault first (most secure — password-protected).
 	vault := NewVault(VaultFile)
 	if vault.Exists() {
 		if !vault.IsUnlocked() {
-			// Only prompt for password if stdin is an interactive terminal.
-			// In non-interactive mode (PM2, systemd, Docker) skip vault and
-			// fall through to env vars / config.
+			// Try GOCLAW_VAULT_PASSWORD env var first (for PM2, systemd, Docker).
+			if envPass := os.Getenv("GOCLAW_VAULT_PASSWORD"); envPass != "" {
+				if err := vault.Unlock(envPass); err != nil {
+					logger.Warn("failed to unlock vault with GOCLAW_VAULT_PASSWORD", "error", err)
+				} else {
+					logger.Info("vault unlocked via GOCLAW_VAULT_PASSWORD")
+				}
+			}
+		}
+
+		if !vault.IsUnlocked() {
+			// Fall back to interactive prompt if stdin is a terminal.
 			if term.IsTerminal(int(os.Stdin.Fd())) {
 				password, err := ReadPassword("Vault password: ")
 				if err != nil {
@@ -78,7 +90,7 @@ func ResolveAPIKey(cfg *Config, logger *slog.Logger) {
 					logger.Warn("failed to unlock vault", "error", err)
 				}
 			} else {
-				logger.Info("vault exists but skipping (non-interactive mode), using env/config")
+				logger.Info("vault exists but skipping (non-interactive mode, no GOCLAW_VAULT_PASSWORD), using env/config")
 			}
 		}
 
@@ -86,10 +98,11 @@ func ResolveAPIKey(cfg *Config, logger *slog.Logger) {
 			if val, err := vault.Get(keyringAPIKey); err == nil && val != "" {
 				cfg.API.APIKey = val
 				logger.Debug("API key loaded from encrypted vault")
-				vault.Lock()
-				return
+				// Don't lock — keep it available for agent vault tools.
+				return vault
 			}
-			vault.Lock()
+			// Vault is unlocked but no API key inside — keep it open for tools.
+			return vault
 		}
 	}
 
@@ -97,16 +110,17 @@ func ResolveAPIKey(cfg *Config, logger *slog.Logger) {
 	if val := GetKeyring(keyringAPIKey); val != "" {
 		cfg.API.APIKey = val
 		logger.Debug("API key loaded from OS keyring")
-		return
+		return nil
 	}
 
 	// 3. If config already has a resolved value (from env expansion), keep it.
 	if cfg.API.APIKey != "" && !IsEnvReference(cfg.API.APIKey) {
 		logger.Debug("API key loaded from config/env")
-		return
+		return nil
 	}
 
 	logger.Warn("no API key found. Set one with: copilot config set-key or copilot config vault-set")
+	return nil
 }
 
 // MigrateKeyToKeyring moves an API key from config/env to the OS keyring

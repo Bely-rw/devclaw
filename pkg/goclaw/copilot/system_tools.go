@@ -23,7 +23,7 @@ import (
 // RegisterSystemTools registers all built-in system tools in the executor.
 // These are core tools available regardless of which skills are loaded.
 // If ssrfGuard is non-nil, web_fetch will validate URLs against SSRF rules.
-func RegisterSystemTools(executor *ToolExecutor, sandboxRunner *sandbox.Runner, memStore *memory.FileStore, sqliteStore *memory.SQLiteStore, memCfg MemoryConfig, sched *scheduler.Scheduler, dataDir string, ssrfGuard *security.SSRFGuard) {
+func RegisterSystemTools(executor *ToolExecutor, sandboxRunner *sandbox.Runner, memStore *memory.FileStore, sqliteStore *memory.SQLiteStore, memCfg MemoryConfig, sched *scheduler.Scheduler, dataDir string, ssrfGuard *security.SSRFGuard, vault *Vault) {
 	registerWebSearchTool(executor)
 	registerWebFetchTool(executor, ssrfGuard)
 	registerFileTools(executor, dataDir)
@@ -39,6 +39,10 @@ func RegisterSystemTools(executor *ToolExecutor, sandboxRunner *sandbox.Runner, 
 
 	if sched != nil {
 		registerCronTools(executor, sched)
+	}
+
+	if vault != nil && vault.IsUnlocked() {
+		registerVaultTools(executor, vault)
 	}
 }
 
@@ -1417,6 +1421,111 @@ func registerCronTools(executor *ToolExecutor, sched *scheduler.Scheduler) {
 				return nil, err
 			}
 			return fmt.Sprintf("Job '%s' removed.", id), nil
+		},
+	)
+}
+
+// ---------- Vault Tools ----------
+
+func registerVaultTools(executor *ToolExecutor, vault *Vault) {
+	// vault_save — store a secret in the encrypted vault.
+	executor.Register(
+		MakeToolDefinition("vault_save", "Store a secret (API key, token, password) in the encrypted vault. Secrets are encrypted with AES-256-GCM and persist across restarts. Use this whenever the user provides a credential or API key.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Secret name/key (e.g. 'weather_api_key', 'github_token')",
+				},
+				"value": map[string]any{
+					"type":        "string",
+					"description": "The secret value to store",
+				},
+			},
+			"required": []string{"name", "value"},
+		}),
+		func(_ context.Context, args map[string]any) (any, error) {
+			name, _ := args["name"].(string)
+			value, _ := args["value"].(string)
+			if name == "" || value == "" {
+				return nil, fmt.Errorf("name and value are required")
+			}
+			if err := vault.Set(name, value); err != nil {
+				return nil, fmt.Errorf("failed to save to vault: %w", err)
+			}
+			return fmt.Sprintf("Secret '%s' saved to encrypted vault.", name), nil
+		},
+	)
+
+	// vault_get — retrieve a secret from the encrypted vault.
+	executor.Register(
+		MakeToolDefinition("vault_get", "Retrieve a secret from the encrypted vault by name.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Secret name/key to retrieve",
+				},
+			},
+			"required": []string{"name"},
+		}),
+		func(_ context.Context, args map[string]any) (any, error) {
+			name, _ := args["name"].(string)
+			if name == "" {
+				return nil, fmt.Errorf("name is required")
+			}
+			val, err := vault.Get(name)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read from vault: %w", err)
+			}
+			if val == "" {
+				return fmt.Sprintf("Secret '%s' not found in vault.", name), nil
+			}
+			return val, nil
+		},
+	)
+
+	// vault_list — list all secret names in the vault (without values).
+	executor.Register(
+		MakeToolDefinition("vault_list", "List all secret names stored in the encrypted vault. Returns only names, not values.", map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		}),
+		func(_ context.Context, _ map[string]any) (any, error) {
+			names := vault.List()
+			if len(names) == 0 {
+				return "Vault is empty.", nil
+			}
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Vault contains %d secrets:\n", len(names)))
+			for _, name := range names {
+				sb.WriteString(fmt.Sprintf("- %s\n", name))
+			}
+			return sb.String(), nil
+		},
+	)
+
+	// vault_delete — remove a secret from the vault.
+	executor.Register(
+		MakeToolDefinition("vault_delete", "Remove a secret from the encrypted vault by name.", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Secret name/key to delete",
+				},
+			},
+			"required": []string{"name"},
+		}),
+		func(_ context.Context, args map[string]any) (any, error) {
+			name, _ := args["name"].(string)
+			if name == "" {
+				return nil, fmt.Errorf("name is required")
+			}
+			if err := vault.Delete(name); err != nil {
+				return nil, fmt.Errorf("failed to delete from vault: %w", err)
+			}
+			return fmt.Sprintf("Secret '%s' removed from vault.", name), nil
 		},
 	)
 }

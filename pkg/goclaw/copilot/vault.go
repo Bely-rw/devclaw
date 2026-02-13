@@ -235,6 +235,16 @@ func (v *Vault) Keys() ([]string, error) {
 	return keys, nil
 }
 
+// List returns the names of all stored secrets (excluding internal entries).
+// Returns an empty slice if the vault is locked or empty.
+func (v *Vault) List() []string {
+	keys, err := v.Keys()
+	if err != nil {
+		return nil
+	}
+	return keys
+}
+
 // ChangePassword re-encrypts all entries with a new master password.
 // The vault must be unlocked.
 func (v *Vault) ChangePassword(newPassword string) error {
