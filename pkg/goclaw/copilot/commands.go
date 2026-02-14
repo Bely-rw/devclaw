@@ -345,6 +345,11 @@ func (a *Assistant) newCommand(msg *channels.IncomingMessage) string {
 	}
 
 	session.ClearHistory()
+
+	// Clear session-scoped tool trust (user must re-approve tools in new session).
+	sessionID := msg.Channel + ":" + msg.ChatID
+	a.approvalMgr.ClearSessionTrust(sessionID)
+
 	return "New session started. Facts and config preserved."
 }
 
@@ -362,6 +367,11 @@ func (a *Assistant) resetCommand(msg *channels.IncomingMessage) string {
 	if a.usageTracker != nil {
 		a.usageTracker.ResetSession(session.ID)
 	}
+
+	// Clear session-scoped tool trust.
+	sessionID := msg.Channel + ":" + msg.ChatID
+	a.approvalMgr.ClearSessionTrust(sessionID)
+
 	return "Session reset completely."
 }
 

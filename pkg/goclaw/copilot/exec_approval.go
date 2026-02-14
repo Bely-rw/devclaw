@@ -35,10 +35,17 @@ type PendingApproval struct {
 }
 
 // ApprovalManager manages pending tool approvals and their resolution.
+// It also tracks session-scoped trust: once a user approves a tool in a session,
+// subsequent uses of the same tool are auto-approved (no re-prompting).
 type ApprovalManager struct {
 	pending map[string]*PendingApproval
-	mu      sync.Mutex
-	logger  *slog.Logger
+
+	// sessionTrust tracks which tools have been approved per session.
+	// key: "sessionID:toolName" → true means auto-approved for this session.
+	sessionTrust map[string]bool
+
+	mu     sync.Mutex
+	logger *slog.Logger
 }
 
 // NewApprovalManager creates a new approval manager.
@@ -47,8 +54,9 @@ func NewApprovalManager(logger *slog.Logger) *ApprovalManager {
 		logger = slog.Default()
 	}
 	return &ApprovalManager{
-		pending: make(map[string]*PendingApproval),
-		logger:  logger.With("component", "approval_manager"),
+		pending:      make(map[string]*PendingApproval),
+		sessionTrust: make(map[string]bool),
+		logger:       logger.With("component", "approval_manager"),
 	}
 }
 
@@ -119,12 +127,31 @@ func (m *ApprovalManager) Wait(id string) (approved bool, err error) {
 // Request creates a pending approval, invokes sendMsg with the approval message,
 // then blocks until the user approves, denies, or timeout.
 // sendMsg is called so the user sees the approval request (e.g. send to channel).
+//
+// If the tool has already been approved in this session (session trust), the
+// request is auto-approved without prompting the user.
 func (m *ApprovalManager) Request(sessionID, callerJID, toolName string, args map[string]any, sendMsg func(msg string)) (bool, error) {
+	// Check session trust — if already approved in this session, auto-approve.
+	if m.IsTrusted(sessionID, toolName) {
+		m.logger.Debug("tool auto-approved (session trust)",
+			"tool", toolName,
+			"session", sessionID,
+		)
+		return true, nil
+	}
+
 	id, message := m.Create(sessionID, callerJID, toolName, args)
 	if sendMsg != nil {
 		sendMsg(message)
 	}
-	return m.Wait(id)
+	approved, err := m.Wait(id)
+
+	// If approved, grant session trust so future calls skip the prompt.
+	if approved && err == nil {
+		m.GrantTrust(sessionID, toolName)
+	}
+
+	return approved, err
 }
 
 // Resolve resolves a pending approval by ID. Returns true if the approval was found and resolved.
@@ -194,6 +221,39 @@ func (m *ApprovalManager) PendingCountForSession(sessionID string) int {
 		}
 	}
 	return count
+}
+
+// ── Session Trust ──
+
+// IsTrusted returns true if the tool has been previously approved in this session.
+func (m *ApprovalManager) IsTrusted(sessionID, toolName string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessionTrust[sessionID+":"+toolName]
+}
+
+// GrantTrust marks a tool as trusted for the given session.
+// Future calls to Request for this tool+session will be auto-approved.
+func (m *ApprovalManager) GrantTrust(sessionID, toolName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionTrust[sessionID+":"+toolName] = true
+	m.logger.Info("session trust granted",
+		"tool", toolName,
+		"session", sessionID,
+	)
+}
+
+// ClearSessionTrust removes all trusted tools for a session (e.g. on /new or /reset).
+func (m *ApprovalManager) ClearSessionTrust(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prefix := sessionID + ":"
+	for key := range m.sessionTrust {
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+			delete(m.sessionTrust, key)
+		}
+	}
 }
 
 // formatApprovalDescription builds a human-readable description of the tool action.

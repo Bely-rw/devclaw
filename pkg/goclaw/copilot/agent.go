@@ -82,7 +82,14 @@ type AgentRun struct {
 	streamCallback        StreamCallback
 	modelOverride         string   // When set, use this model instead of default.
 	usageRecorder         func(model string, usage LLMUsage) // Called after each successful LLM response.
-	logger                *slog.Logger
+
+	// interruptCh receives follow-up user messages that should be injected into
+	// the active agent loop. Between turns, the agent drains this channel and
+	// appends the messages to the conversation before the next LLM call.
+	// This enables Claude Code-style live message injection.
+	interruptCh <-chan string
+
+	logger *slog.Logger
 }
 
 // NewAgentRun creates a new agent runner.
@@ -134,6 +141,14 @@ func (a *AgentRun) SetModelOverride(model string) {
 // SetUsageRecorder sets a callback invoked after each successful LLM response.
 func (a *AgentRun) SetUsageRecorder(fn func(model string, usage LLMUsage)) {
 	a.usageRecorder = fn
+}
+
+// SetInterruptChannel sets the channel for receiving follow-up user messages
+// during agent execution. Messages received on this channel are injected into
+// the conversation between agent turns, allowing users to steer the agent
+// mid-run (similar to Claude Code behavior).
+func (a *AgentRun) SetInterruptChannel(ch <-chan string) {
+	a.interruptCh = ch
 }
 
 // Run executes the agent loop: builds the initial message list from conversation
@@ -189,6 +204,25 @@ func (a *AgentRun) RunWithUsage(ctx context.Context, systemPrompt string, histor
 				"continuation", continuations,
 				"messages", len(messages),
 			)
+
+			// ── Interrupt injection ──
+			// Check for follow-up user messages sent while the agent was working.
+			// These are injected as user messages so the LLM sees them before the
+			// next call and can adjust its behavior (Claude Code-style).
+			if turn > 1 {
+				if interrupts := a.drainInterrupts(); len(interrupts) > 0 {
+					for _, interrupt := range interrupts {
+						messages = append(messages, chatMessage{
+							Role:    "user",
+							Content: "[Follow-up from user while processing]\n" + interrupt,
+						})
+					}
+					a.logger.Info("injected interrupt messages into agent loop",
+						"count", len(interrupts),
+						"turn", totalTurns,
+					)
+				}
+			}
 
 			// Inject reflection nudge periodically.
 			if a.reflectionOn && turn > 1 && turn%reflectionInterval == 0 {
@@ -287,6 +321,26 @@ func (a *AgentRun) RunWithUsage(ctx context.Context, systemPrompt string, histor
 		}
 		a.accumulateUsage(&totalUsage, resp)
 		return resp.Content, &totalUsage, nil
+	}
+}
+
+// drainInterrupts reads all pending messages from the interrupt channel
+// without blocking. Returns nil if no messages are available.
+func (a *AgentRun) drainInterrupts() []string {
+	if a.interruptCh == nil {
+		return nil
+	}
+	var msgs []string
+	for {
+		select {
+		case msg, ok := <-a.interruptCh:
+			if !ok {
+				return msgs // Channel closed.
+			}
+			msgs = append(msgs, msg)
+		default:
+			return msgs
+		}
 	}
 }
 

@@ -83,6 +83,13 @@ type Assistant struct {
 	activeRuns   map[string]context.CancelFunc
 	activeRunsMu sync.Mutex
 
+	// interruptInboxes maps sessionID (channel:chatID) → channel for injecting
+	// follow-up messages into active agent runs. When a user sends a message
+	// while the agent is processing, the enriched content is pushed here so the
+	// agent loop picks it up on its next turn (Claude Code-style).
+	interruptInboxes   map[string]chan string
+	interruptInboxesMu sync.Mutex
+
 	// usageTracker records token usage and estimated costs per session.
 	usageTracker *UsageTracker
 
@@ -132,9 +139,10 @@ func New(cfg *Config, logger *slog.Logger) *Assistant {
 		inputGuard:     security.NewInputGuardrail(cfg.Security.MaxInputLength, cfg.Security.RateLimit),
 		outputGuard:    security.NewOutputGuardrail(),
 		subagentMgr:    NewSubagentManager(cfg.Subagents, logger),
-		activeRuns:     make(map[string]context.CancelFunc),
-		usageTracker:   NewUsageTracker(logger.With("component", "usage")),
-		logger:         logger,
+		activeRuns:       make(map[string]context.CancelFunc),
+		interruptInboxes: make(map[string]chan string),
+		usageTracker:     NewUsageTracker(logger.With("component", "usage")),
+		logger:           logger,
 	}
 
 	// Wire message queue with onDrain callback (requires assistant reference).
@@ -590,8 +598,40 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 		}
 	}
 
-	// ── Step 1b: Message queue (if session already processing, enqueue and return) ──
+	// ── Step 1b: Live injection / message queue ──
+	// If the session is already processing, try to inject the message into the
+	// active agent run (Claude Code-style). The agent loop will pick it up on
+	// its next turn. Falls back to the debounce queue if injection is not possible.
 	if a.messageQueue.IsProcessing(sessionID) {
+		a.interruptInboxesMu.Lock()
+		inbox, hasInbox := a.interruptInboxes[sessionID]
+		a.interruptInboxesMu.Unlock()
+
+		if hasInbox {
+			// Enrich content (images → description, audio → transcript).
+			enriched := a.enrichMessageContent(a.ctx, msg, logger)
+
+			// Validate input before injection.
+			if err := a.inputGuard.Validate(msg.From, enriched); err != nil {
+				logger.Warn("interrupt input rejected", "error", err)
+				return
+			}
+
+			// Non-blocking send to the interrupt inbox.
+			select {
+			case inbox <- enriched:
+				logger.Info("message injected into active agent run",
+					"session", sessionID,
+					"content_preview", truncate(enriched, 50),
+				)
+				a.channelMgr.SendReaction(a.ctx, msg.Channel, msg.ChatID, msg.ID, "👀")
+				return
+			default:
+				logger.Warn("interrupt inbox full, falling back to queue", "session", sessionID)
+			}
+		}
+
+		// Fallback: enqueue for processing after the current run finishes.
 		if a.messageQueue.Enqueue(sessionID, msg) {
 			logger.Info("message enqueued (session busy)", "session", sessionID)
 		}
@@ -653,7 +693,7 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 		blockStreamer = NewBlockStreamer(bsCfg, a.channelMgr, msg.Channel, msg.ChatID, msg.ID)
 	}
 
-	response := a.executeAgentWithStream(a.ctx, workspace.ID, session, prompt, userContent, blockStreamer)
+	response := a.executeAgentWithStream(a.ctx, workspace.ID, session, sessionID, prompt, userContent, blockStreamer)
 
 	// Finalize the block streamer (flush remaining text).
 	if blockStreamer != nil {
@@ -761,11 +801,23 @@ func (a *Assistant) composeWorkspacePrompt(ws *Workspace, session *Session, inpu
 
 // executeAgentWithStream runs the agentic loop, optionally streaming text
 // progressively to the channel via a BlockStreamer.
-func (a *Assistant) executeAgentWithStream(ctx context.Context, workspaceID string, session *Session, systemPrompt string, userMessage string, streamer *BlockStreamer) string {
+// sessionID is the channel:chatID key used for interrupt inbox routing.
+func (a *Assistant) executeAgentWithStream(ctx context.Context, workspaceID string, session *Session, sessionID string, systemPrompt string, userMessage string, streamer *BlockStreamer) string {
 	runKey := workspaceID + ":" + session.ID
+
+	// Create interrupt inbox so follow-up messages can be injected mid-run.
+	interruptInbox := make(chan string, 10)
+	a.interruptInboxesMu.Lock()
+	a.interruptInboxes[sessionID] = interruptInbox
+	a.interruptInboxesMu.Unlock()
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer func() {
+		// Remove interrupt inbox before releasing the processing lock.
+		a.interruptInboxesMu.Lock()
+		delete(a.interruptInboxes, sessionID)
+		a.interruptInboxesMu.Unlock()
+
 		a.activeRunsMu.Lock()
 		delete(a.activeRuns, runKey)
 		a.activeRunsMu.Unlock()
@@ -781,6 +833,9 @@ func (a *Assistant) executeAgentWithStream(ctx context.Context, workspaceID stri
 	modelOverride := session.GetConfig().Model
 	agent := NewAgentRunWithConfig(a.llmClient, a.toolExecutor, a.config.Agent, a.logger)
 	agent.SetModelOverride(modelOverride)
+
+	// Wire interrupt channel for live message injection.
+	agent.SetInterruptChannel(interruptInbox)
 
 	// Wire block streaming if provided.
 	if streamer != nil {
@@ -941,11 +996,23 @@ func (a *Assistant) initScheduler() {
 	}
 
 	// Job handler: runs the command as an agent turn.
+	// Scheduled jobs run with full trust (no approval prompts) because they
+	// were explicitly created by the user and execute autonomously.
 	handler := func(ctx context.Context, job *scheduler.Job) (string, error) {
 		a.logger.Info("scheduler executing job", "id", job.ID, "command", job.Command)
 
 		// Get or create a session for this scheduled job.
 		session := a.sessionStore.GetOrCreate("scheduler", job.ID)
+
+		// Grant session trust for all tools that normally require confirmation
+		// so the scheduled agent can run without user interaction.
+		schedulerSessionID := "scheduler:" + job.ID
+		for _, toolName := range a.config.Security.ToolGuard.RequireConfirmation {
+			a.approvalMgr.GrantTrust(schedulerSessionID, toolName)
+		}
+		// Also set the tool executor context for the scheduler session.
+		a.toolExecutor.SetCallerContext(AccessOwner, "scheduler")
+		a.toolExecutor.SetSessionContext(schedulerSessionID)
 
 		prompt := a.promptComposer.Compose(session, job.Command)
 
@@ -984,10 +1051,23 @@ func (a *Assistant) registerSkillLoaders() {
 	}
 
 	// ClawdHub (OpenClaw-compatible) skills loader.
-	if len(a.config.Skills.ClawdHubDirs) > 0 {
-		clawdHubLoader := skills.NewClawdHubLoader(a.config.Skills.ClawdHubDirs, a.logger)
-		a.skillRegistry.AddLoader(clawdHubLoader)
+	// Always include ./skills/ as the default user skills directory, even if
+	// not explicitly listed in config. This ensures user-installed skills are
+	// always discovered.
+	dirs := a.config.Skills.ClawdHubDirs
+	defaultDir := "./skills"
+	hasDefault := false
+	for _, d := range dirs {
+		if d == defaultDir || d == "skills" || d == "skills/" {
+			hasDefault = true
+			break
+		}
 	}
+	if !hasDefault {
+		dirs = append(dirs, defaultDir)
+	}
+	clawdHubLoader := skills.NewClawdHubLoader(dirs, a.logger)
+	a.skillRegistry.AddLoader(clawdHubLoader)
 }
 
 // initializeSkills initializes all loaded skills, passing the sandbox runner

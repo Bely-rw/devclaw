@@ -203,11 +203,18 @@ func (g *ToolGuard) Check(toolName string, callerLevel AccessLevel, args map[str
 	}
 
 	// Check if tool requires confirmation (after permission checks pass).
+	// For bash/exec, read-only commands (ls, cat, curl, etc.) skip confirmation.
 	requiresConfirmation := false
 	for _, name := range g.cfg.RequireConfirmation {
 		if name == toolName {
 			requiresConfirmation = true
 			break
+		}
+	}
+	if requiresConfirmation && (toolName == "bash" || toolName == "exec") {
+		command, _ := args["command"].(string)
+		if isReadOnlyCommand(command) {
+			requiresConfirmation = false
 		}
 	}
 
@@ -583,4 +590,157 @@ func extractSSHHost(s string) string {
 		return s[:idx]
 	}
 	return ""
+}
+
+// safeCommandPrefixes lists command prefixes that are read-only / side-effect-free.
+// If the first command in a pipeline starts with one of these, the bash call
+// skips the RequireConfirmation prompt because it can't modify the system.
+var safeCommandPrefixes = []string{
+	"ls", "cat", "head", "tail", "less", "more",
+	"grep", "rg", "awk", "sed", // sed is read-only when not using -i
+	"wc", "sort", "uniq", "cut", "tr", "tee",
+	"find", "which", "whereis", "type", "file",
+	"echo", "printf", "date", "cal", "uptime",
+	"whoami", "id", "hostname", "uname",
+	"env", "printenv", "set",
+	"pwd", "realpath", "dirname", "basename",
+	"df", "du", "free", "top", "ps", "pgrep",
+	"curl", "wget", "dig", "nslookup", "ping", "traceroute",
+	"stat", "md5sum", "sha256sum", "sha1sum",
+	"diff", "cmp", "comm",
+	"jq", "yq", "python3 -c", "python -c", "node -e",
+	"go version", "go env", "git status", "git log", "git diff", "git show", "git branch",
+	"pm2 list", "pm2 status", "pm2 logs",
+	"docker ps", "docker images", "docker logs",
+	"tree", "wc",
+}
+
+// isReadOnlyCommand returns true if the bash command is read-only (no side effects).
+// This is used to skip the RequireConfirmation prompt for safe commands.
+func isReadOnlyCommand(command string) bool {
+	if command == "" {
+		return false
+	}
+
+	// Normalize: trim whitespace and handle common prefixes.
+	cmd := strings.TrimSpace(command)
+
+	// If the command contains write-indicating operators, it's not read-only.
+	// Check for output redirection (>, >>), but allow pipes (|).
+	for i := 0; i < len(cmd); i++ {
+		ch := cmd[i]
+		// Skip content inside single/double quotes.
+		if ch == '\'' || ch == '"' {
+			quote := ch
+			i++
+			for i < len(cmd) && cmd[i] != quote {
+				if cmd[i] == '\\' {
+					i++ // skip escaped char
+				}
+				i++
+			}
+			continue
+		}
+		// Output redirection → not read-only.
+		if ch == '>' {
+			return false
+		}
+	}
+
+	// Split by pipe and check the first command (the one that "does" the work).
+	// Also split by && and ; to check all commands in a chain.
+	parts := splitCommandChain(cmd)
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !matchesSafePrefix(part) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// splitCommandChain splits a command string by &&, ;, and || operators.
+// Pipe (|) is NOT a split point because piped commands form a single pipeline.
+func splitCommandChain(cmd string) []string {
+	var parts []string
+	var current strings.Builder
+	inQuote := byte(0)
+
+	for i := 0; i < len(cmd); i++ {
+		ch := cmd[i]
+
+		// Track quotes.
+		if inQuote != 0 {
+			current.WriteByte(ch)
+			if ch == inQuote && (i == 0 || cmd[i-1] != '\\') {
+				inQuote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			inQuote = ch
+			current.WriteByte(ch)
+			continue
+		}
+
+		// Split on && or ||.
+		if i < len(cmd)-1 && ((ch == '&' && cmd[i+1] == '&') || (ch == '|' && cmd[i+1] == '|')) {
+			parts = append(parts, current.String())
+			current.Reset()
+			i++ // skip second char
+			continue
+		}
+		// Split on ;.
+		if ch == ';' {
+			parts = append(parts, current.String())
+			current.Reset()
+			continue
+		}
+
+		current.WriteByte(ch)
+	}
+
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+	return parts
+}
+
+// matchesSafePrefix checks if a command starts with a known read-only prefix.
+func matchesSafePrefix(cmd string) bool {
+	cmd = strings.TrimSpace(cmd)
+
+	// Strip leading env vars (e.g. "VAR=val command").
+	for {
+		if idx := strings.Index(cmd, "="); idx > 0 && idx < strings.Index(cmd+" ", " ") {
+			// This looks like VAR=val, skip it.
+			rest := cmd[idx+1:]
+			spaceIdx := strings.IndexByte(rest, ' ')
+			if spaceIdx < 0 {
+				break // VAR=val with no command after
+			}
+			cmd = strings.TrimSpace(rest[spaceIdx:])
+		} else {
+			break
+		}
+	}
+
+	// Pipe: for each segment in a pipeline, the last consumer determines safety,
+	// but since we split by &&/; we get full pipelines. Each segment in a pipe
+	// is read-only if the first command is read-only, so check just the first.
+	pipeSegments := strings.SplitN(cmd, "|", 2)
+	first := strings.TrimSpace(pipeSegments[0])
+
+	for _, prefix := range safeCommandPrefixes {
+		if first == prefix ||
+			strings.HasPrefix(first, prefix+" ") ||
+			strings.HasPrefix(first, prefix+"\t") {
+			return true
+		}
+	}
+	return false
 }
