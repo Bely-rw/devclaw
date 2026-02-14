@@ -348,9 +348,36 @@ func runInteractiveSetup() error {
 	}
 
 	// ═══════════════════════════════════════════════
+	// Group 7: Default skills installation
+	// ═══════════════════════════════════════════════
+	templates := defaultSkillTemplates()
+	skillOpts := make([]huh.Option[string], 0, len(templates))
+	for _, t := range templates {
+		skillOpts = append(skillOpts, huh.NewOption(t.Label, t.Name))
+	}
+
+	var selectedSkills []string
+	err = huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Install default skills").
+				Description("Select skills to install (Space to toggle, Enter to confirm)").
+				Options(skillOpts...).
+				Value(&selectedSkills),
+		).Title("Skills"),
+	).WithTheme(huh.ThemeDracula()).Run()
+	if err != nil {
+		return err
+	}
+
+	if len(selectedSkills) > 0 {
+		installEmbeddedSkills(selectedSkills)
+	}
+
+	// ═══════════════════════════════════════════════
 	// Summary + Confirm
 	// ═══════════════════════════════════════════════
-	printSummary(cfg, keyStorage)
+	printSummary(cfg, keyStorage, selectedSkills)
 
 	var doSave bool
 	err = huh.NewForm(
@@ -643,7 +670,7 @@ func setupAdvanced(cfg *copilot.Config) error {
 }
 
 // printSummary displays the configuration summary.
-func printSummary(cfg *copilot.Config, keyStorage storageMethod) {
+func printSummary(cfg *copilot.Config, keyStorage storageMethod, installedSkills []string) {
 	fmt.Println()
 	fmt.Println("─────────────────────────────────────────────")
 	fmt.Println("  Configuration summary:")
@@ -694,6 +721,9 @@ func printSummary(cfg *copilot.Config, keyStorage storageMethod) {
 	fmt.Printf("  Vision:     %v\n", cfg.Media.VisionEnabled)
 	fmt.Printf("  Audio:      %v\n", cfg.Media.TranscriptionEnabled)
 	fmt.Printf("  Log level:  %s\n", cfg.Logging.Level)
+	if len(installedSkills) > 0 {
+		fmt.Printf("  Skills:     %s\n", strings.Join(installedSkills, ", "))
+	}
 	fmt.Println("─────────────────────────────────────────────")
 	fmt.Println()
 }
