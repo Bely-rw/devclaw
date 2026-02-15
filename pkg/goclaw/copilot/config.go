@@ -225,7 +225,7 @@ func DefaultFallbackConfig() FallbackConfig {
 		MaxRetries:         2,
 		InitialBackoffMs:   1000,
 		MaxBackoffMs:       30000,
-		RetryOnStatusCodes: []int{429, 500, 502, 503, 529},
+		RetryOnStatusCodes: []int{429, 500, 502, 503, 521, 522, 523, 524, 529},
 	}
 }
 
@@ -242,7 +242,7 @@ func (f FallbackConfig) Effective() FallbackConfig {
 		out.MaxBackoffMs = 30000
 	}
 	if len(out.RetryOnStatusCodes) == 0 {
-		out.RetryOnStatusCodes = []int{429, 500, 502, 503, 529}
+		out.RetryOnStatusCodes = []int{429, 500, 502, 503, 521, 522, 523, 524, 529}
 	}
 	return out
 }

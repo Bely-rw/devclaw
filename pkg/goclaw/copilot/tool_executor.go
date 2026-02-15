@@ -118,6 +118,22 @@ var sequentialTools = map[string]bool{
 	"ssh": true, "scp": true, "exec": true, "set_env": true,
 }
 
+// ToolHook is a callback that runs before or after tool execution.
+// Before hooks can modify args or block execution by returning an error.
+// After hooks can observe/log the result but cannot modify it.
+type ToolHook struct {
+	// Name identifies this hook for logging and debugging.
+	Name string
+
+	// BeforeToolCall is called before the tool handler executes.
+	// Return modified args (or original), or an error to block execution.
+	// If blocked is true, the tool is not executed and blockReason is returned.
+	BeforeToolCall func(toolName string, args map[string]any) (modifiedArgs map[string]any, blocked bool, blockReason string)
+
+	// AfterToolCall is called after the tool handler executes (success or error).
+	AfterToolCall func(toolName string, args map[string]any, result string, err error)
+}
+
 // ToolExecutor manages tool registration and dispatches tool calls.
 type ToolExecutor struct {
 	tools   map[string]*registeredTool
@@ -146,6 +162,9 @@ type ToolExecutor struct {
 	// confirmationRequester is called when a tool requires user approval.
 	// If nil, tools requiring confirmation are denied.
 	confirmationRequester func(sessionID, callerJID, toolName string, args map[string]any) (approved bool, err error)
+
+	// hooks holds registered before/after tool execution hooks (OpenClaw pattern).
+	hooks []*ToolHook
 }
 
 // NewToolExecutor creates a new empty tool executor.
@@ -165,6 +184,15 @@ func (e *ToolExecutor) SetGuard(guard *ToolGuard) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.guard = guard
+}
+
+// RegisterHook adds a before/after tool execution hook.
+// Hooks are called in registration order. Multiple hooks can be registered.
+func (e *ToolExecutor) RegisterHook(hook *ToolHook) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.hooks = append(e.hooks, hook)
+	e.logger.Info("tool hook registered", "hook", hook.Name)
 }
 
 // Guard returns the configured ToolGuard (may be nil).
@@ -532,11 +560,45 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 	}
 	defer cancel()
 
+	// ── Before-tool hooks (OpenClaw pattern) ──
+	e.mu.RLock()
+	hooks := e.hooks
+	e.mu.RUnlock()
+
+	for _, hook := range hooks {
+		if hook.BeforeToolCall != nil {
+			modArgs, blocked, reason := hook.BeforeToolCall(name, args)
+			if blocked {
+				result.Content = fmt.Sprintf("Blocked by hook %q: %s", hook.Name, reason)
+				result.Error = fmt.Errorf("blocked by hook: %s", reason)
+				e.logger.Info("tool blocked by before-hook",
+					"tool", name, "hook", hook.Name, "reason", reason)
+				return result
+			}
+			if modArgs != nil {
+				args = modArgs
+			}
+		}
+	}
+
 	e.logger.Debug("executing tool", "name", name, "args_keys", mapKeys(args))
 
 	start := time.Now()
 	output, err := tool.Handler(execCtx, args)
 	duration := time.Since(start)
+
+	// ── After-tool hooks (OpenClaw pattern) ──
+	resultStr := ""
+	if err != nil {
+		resultStr = fmt.Sprintf("Error: %v", err)
+	} else {
+		resultStr = formatToolOutput(output)
+	}
+	for _, hook := range hooks {
+		if hook.AfterToolCall != nil {
+			hook.AfterToolCall(name, args, resultStr, err)
+		}
+	}
 
 	if err != nil {
 		result.Content = fmt.Sprintf("Error: %v", err)
@@ -553,7 +615,7 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 	}
 
 	// Serialize output to string.
-	result.Content = formatToolOutput(output)
+	result.Content = resultStr
 
 	e.logger.Info("tool executed",
 		"name", name,

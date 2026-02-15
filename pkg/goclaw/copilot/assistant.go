@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -186,6 +187,39 @@ func New(cfg *Config, logger *slog.Logger) *Assistant {
 			_ = a.channelMgr.Send(a.ctx, channel, chatID, &channels.OutgoingMessage{Content: msg})
 		}
 		return approvalMgr.Request(sessionID, callerJID, toolName, args, sendMsg)
+	})
+
+	// Wire subagent announce callback (OpenClaw pattern): when a subagent
+	// completes, push the result to the parent's channel instead of requiring
+	// the agent to poll with wait_subagent.
+	a.subagentMgr.SetAnnounceCallback(func(run *SubagentRun) {
+		sessionID := run.ParentSessionID
+		channel, chatID, ok := strings.Cut(sessionID, ":")
+		if !ok {
+			return
+		}
+
+		var msg string
+		switch run.Status {
+		case SubagentStatusCompleted:
+			result := run.Result
+			if len(result) > 3000 {
+				result = result[:3000] + "\n... (truncated)"
+			}
+			msg = fmt.Sprintf("✅ Subagent **%s** completed in %s:\n\n%s",
+				run.Label, run.Duration.Round(time.Second), result)
+		case SubagentStatusFailed:
+			msg = fmt.Sprintf("❌ Subagent **%s** failed after %s: %s",
+				run.Label, run.Duration.Round(time.Second), run.Error)
+		case SubagentStatusTimeout:
+			msg = fmt.Sprintf("⏱️ Subagent **%s** timed out after %s.",
+				run.Label, run.Duration.Round(time.Second))
+		default:
+			return
+		}
+
+		outMsg := &channels.OutgoingMessage{Content: FormatForChannel(msg, channel)}
+		_ = a.channelMgr.Send(a.ctx, channel, chatID, outMsg)
 	})
 
 	return a
@@ -824,7 +858,14 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 	// ── Step 10: Update session ──
 	session.AddMessage(userContent, response)
 
-	// ── Step 10b: Check if session needs compaction ──
+	// ── Step 10b: Auto-capture memories from this conversation turn ──
+	// OpenClaw pattern: asynchronously extract important facts, preferences, and
+	// decisions from the user+assistant exchange so they're available for future recall.
+	if a.memoryStore != nil {
+		go a.autoCaptureFacts(userContent, response, sessionID)
+	}
+
+	// ── Step 10c: Check if session needs compaction ──
 	a.maybeCompactSession(session)
 
 	// ── Step 11: Send reply (skip if block streamer already sent everything) ──
@@ -1415,6 +1456,108 @@ func (a *Assistant) doCompactSession(session *Session) {
 
 // compactSummarize uses the LLM to generate a summary of older conversation
 // and replaces old entries with the summary, keeping recent entries.
+// autoCaptureFacts performs lightweight fact extraction from a conversation turn.
+// Runs asynchronously — should not block message delivery.
+// Mirrors OpenClaw's auto-capture hook: scans for memory triggers (preferences,
+// decisions, entities, facts) and saves them via memory_save.
+func (a *Assistant) autoCaptureFacts(userMessage, assistantResponse, sessionID string) {
+	// Only capture from substantive exchanges (skip greetings, short replies).
+	if len(userMessage) < 30 && len(assistantResponse) < 100 {
+		return
+	}
+
+	// Check for memory triggers (OpenClaw pattern from MEMORY_TRIGGERS).
+	combined := strings.ToLower(userMessage + " " + assistantResponse)
+	triggers := []string{
+		"remember", "lembre", "lembra", "prefer", "prefiro", "prefere",
+		"always", "sempre", "never", "nunca", "my name", "meu nome",
+		"i live", "eu moro", "i work", "eu trabalho", "important",
+		"importante", "note that", "anota", "salva", "save",
+		"decision", "decisão", "decided", "decidimos", "escolhi",
+	}
+
+	hasTrigger := false
+	for _, t := range triggers {
+		if strings.Contains(combined, t) {
+			hasTrigger = true
+			break
+		}
+	}
+
+	if !hasTrigger {
+		return
+	}
+
+	// Use a lightweight LLM call to extract facts worth remembering.
+	extractPrompt := fmt.Sprintf(
+		"Analyze this conversation exchange and extract ONLY genuinely important facts "+
+			"worth remembering long-term (preferences, personal info, decisions, key facts). "+
+			"If nothing important, reply with exactly: NOTHING\n\n"+
+			"User: %s\n\nAssistant: %s\n\n"+
+			"Reply with a JSON array of strings, each being one fact to save. Example: "+
+			`["User prefers dark mode", "User's name is João"]`+
+			"\nOr reply: NOTHING",
+		truncateForCapture(userMessage, 500),
+		truncateForCapture(assistantResponse, 500),
+	)
+
+	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+	defer cancel()
+
+	result, err := a.llmClient.Complete(ctx, "", nil, extractPrompt)
+	if err != nil || strings.TrimSpace(result) == "NOTHING" || strings.TrimSpace(result) == "" {
+		return
+	}
+
+	// Parse the JSON array of facts.
+	var facts []string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &facts); err != nil {
+		// Try single-line: maybe model returned plain text.
+		lines := strings.Split(result, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" && line != "NOTHING" && len(line) > 10 {
+				facts = append(facts, line)
+			}
+		}
+	}
+
+	if len(facts) == 0 {
+		return
+	}
+
+	// Save each fact to memory.
+	for _, fact := range facts {
+		fact = strings.TrimSpace(fact)
+		if fact == "" || len(fact) < 5 {
+			continue
+		}
+		_ = a.memoryStore.Save(memory.Entry{
+			Content:   fact,
+			Source:    "auto-capture",
+			Category:  "fact",
+			Timestamp: time.Now(),
+		})
+		a.logger.Debug("auto-captured memory fact",
+			"fact_preview", truncateForCapture(fact, 60),
+			"session", sessionID,
+		)
+	}
+
+	a.logger.Info("memory auto-capture completed",
+		"facts_saved", len(facts),
+		"session", sessionID,
+	)
+}
+
+// truncateForCapture limits text length for memory extraction prompts.
+func truncateForCapture(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 func (a *Assistant) compactSummarize(session *Session, threshold int) {
 	// Step 1: Memory flush — extract important facts before discarding.
 	if a.memoryStore != nil {

@@ -126,6 +126,11 @@ type SubagentRun struct {
 
 // ─── Subagent Manager ───
 
+// AnnounceCallback is called when a subagent completes, allowing push-style
+// notification to the parent session (OpenClaw announce pattern).
+// Receives the completed run so the caller can notify the user/agent.
+type AnnounceCallback func(run *SubagentRun)
+
 // SubagentManager orchestrates subagent lifecycle: spawning, tracking, and cleanup.
 type SubagentManager struct {
 	cfg    SubagentConfig
@@ -136,6 +141,10 @@ type SubagentManager struct {
 
 	// semaphore limits concurrent subagents.
 	semaphore chan struct{}
+
+	// announceCallback is called when a subagent completes, pushing the result
+	// instead of requiring the parent to poll with wait_subagent.
+	announceCallback AnnounceCallback
 
 	mu sync.RWMutex
 }
@@ -161,6 +170,15 @@ func NewSubagentManager(cfg SubagentConfig, logger *slog.Logger) *SubagentManage
 		runs:      make(map[string]*SubagentRun),
 		semaphore: make(chan struct{}, cfg.MaxConcurrent),
 	}
+}
+
+// SetAnnounceCallback registers a callback that fires when any subagent completes.
+// This enables OpenClaw-style push announce: the parent is notified immediately
+// instead of having to poll via wait_subagent.
+func (m *SubagentManager) SetAnnounceCallback(cb AnnounceCallback) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.announceCallback = cb
 }
 
 // SpawnParams holds parameters for spawning a subagent.
@@ -305,9 +323,9 @@ func (m *SubagentManager) Spawn(
 }
 
 // completeRun finalizes a subagent run with its result or error.
+// After updating state, fires the announce callback if registered.
 func (m *SubagentManager) completeRun(run *SubagentRun, result string, err error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	run.CompletedAt = time.Now()
 	run.Duration = run.CompletedAt.Sub(run.StartedAt)
@@ -333,6 +351,15 @@ func (m *SubagentManager) completeRun(run *SubagentRun, result string, err error
 			"duration", run.Duration,
 			"result_len", len(result),
 		)
+	}
+
+	cb := m.announceCallback
+	m.mu.Unlock()
+
+	// ── Announce (push) ── OpenClaw pattern: notify parent immediately
+	// instead of requiring poll via wait_subagent.
+	if cb != nil {
+		go cb(run)
 	}
 }
 

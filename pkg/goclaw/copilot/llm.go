@@ -723,20 +723,56 @@ type LLMUsage struct {
 // ---------- Error Classification ----------
 
 // LLMErrorKind classifies API errors for retry/fallback decisions.
+// Granular classification mirrors OpenClaw's errors.ts for smarter retry behavior.
 type LLMErrorKind int
 
 const (
-	LLMErrorRetryable  LLMErrorKind = iota // 429, 500, 502, 503, 529
-	LLMErrorAuth                           // 401, 403
+	LLMErrorRetryable  LLMErrorKind = iota // generic retryable (transient 5xx)
+	LLMErrorRateLimit                      // 429 — rate limited, should respect Retry-After
+	LLMErrorOverloaded                     // 529 or "overloaded" in body
+	LLMErrorTimeout                        // request timeout / deadline exceeded
+	LLMErrorAuth                           // 401, 403 — invalid/expired API key
+	LLMErrorBilling                        // 402 or billing-related in body
 	LLMErrorContext                        // context_length_exceeded
-	LLMErrorBadRequest                     // 400
+	LLMErrorBadRequest                     // 400 — malformed request
 	LLMErrorFatal                          // everything else
 )
 
+// String returns a human-readable label for the error kind.
+func (k LLMErrorKind) String() string {
+	switch k {
+	case LLMErrorRetryable:
+		return "retryable"
+	case LLMErrorRateLimit:
+		return "rate_limit"
+	case LLMErrorOverloaded:
+		return "overloaded"
+	case LLMErrorTimeout:
+		return "timeout"
+	case LLMErrorAuth:
+		return "auth"
+	case LLMErrorBilling:
+		return "billing"
+	case LLMErrorContext:
+		return "context"
+	case LLMErrorBadRequest:
+		return "bad_request"
+	case LLMErrorFatal:
+		return "fatal"
+	default:
+		return "unknown"
+	}
+}
+
+// IsRetryableKind returns true if the error kind warrants retrying.
+func (k LLMErrorKind) IsRetryableKind() bool {
+	return k == LLMErrorRetryable || k == LLMErrorRateLimit || k == LLMErrorOverloaded || k == LLMErrorTimeout
+}
+
 // apiError captures HTTP status, body, and optional Retry-After for 429.
 type apiError struct {
-	statusCode   int
-	body         string
+	statusCode    int
+	body          string
 	retryAfterSec int // from Retry-After header, 0 if not set
 }
 
@@ -745,19 +781,59 @@ func (e *apiError) Error() string {
 }
 
 // classifyAPIError determines the error kind from status code and response body.
+// Mirrors OpenClaw's granular classification: rate_limit, billing, auth,
+// overloaded, timeout, context, transient HTTP.
 func classifyAPIError(statusCode int, body string) LLMErrorKind {
 	bodyLower := strings.ToLower(body)
-	if strings.Contains(bodyLower, "context_length_exceeded") {
+
+	// Context overflow — highest priority check.
+	if strings.Contains(bodyLower, "context_length_exceeded") ||
+		strings.Contains(bodyLower, "maximum context length") {
 		return LLMErrorContext
 	}
+
+	// Billing / quota exhausted.
+	if statusCode == 402 ||
+		strings.Contains(bodyLower, "billing") ||
+		strings.Contains(bodyLower, "quota") ||
+		strings.Contains(bodyLower, "insufficient_quota") ||
+		strings.Contains(bodyLower, "payment required") {
+		return LLMErrorBilling
+	}
+
+	// Rate limit.
+	if statusCode == 429 ||
+		strings.Contains(bodyLower, "rate_limit") ||
+		strings.Contains(bodyLower, "rate limit") ||
+		strings.Contains(bodyLower, "too many requests") {
+		return LLMErrorRateLimit
+	}
+
+	// Overloaded.
+	if statusCode == 529 ||
+		strings.Contains(bodyLower, "overloaded") ||
+		strings.Contains(bodyLower, "capacity") {
+		return LLMErrorOverloaded
+	}
+
+	// Timeout.
+	if strings.Contains(bodyLower, "timeout") ||
+		strings.Contains(bodyLower, "deadline") ||
+		strings.Contains(bodyLower, "timed out") {
+		return LLMErrorTimeout
+	}
+
 	switch statusCode {
 	case 400:
 		return LLMErrorBadRequest
 	case 401, 403:
 		return LLMErrorAuth
-	case 429, 500, 502, 503, 529:
+	case 500, 502, 503, 521, 522, 523, 524:
 		return LLMErrorRetryable
 	default:
+		if statusCode >= 500 {
+			return LLMErrorRetryable
+		}
 		return LLMErrorFatal
 	}
 }
@@ -1649,12 +1725,12 @@ func (c *LLMClient) CompleteWithFallbackUsingModel(ctx context.Context, modelOve
 			}
 			kind := classifyAPIError(statusCode, body)
 
-			// Non-retryable: fail immediately (auth, context, bad request, or not in RetryOnStatusCodes)
-			if kind != LLMErrorRetryable || !c.isRetryable(statusCode) {
+			// Non-retryable: fail immediately (auth, billing, context, bad request)
+			if !kind.IsRetryableKind() || !c.isRetryable(statusCode) {
 				c.logger.Warn("non-retryable LLM error, failing immediately",
 					"model", model,
 					"attempt", attempt+1,
-					"kind", kind,
+					"kind", kind.String(),
 					"error", err,
 				)
 				return nil, err
@@ -1696,6 +1772,7 @@ func (c *LLMClient) CompleteWithFallbackUsingModel(ctx context.Context, modelOve
 				"model", model,
 				"attempt", attempt+1,
 				"next_attempt", attempt+2,
+				"kind", kind.String(),
 				"backoff_ms", retryAfter.Milliseconds(),
 				"error", err,
 			)
