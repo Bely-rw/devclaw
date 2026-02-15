@@ -52,18 +52,36 @@ type SubagentConfig struct {
 	Model string `yaml:"model"`
 }
 
+// DefaultSubagentDeniedTools mirrors OpenClaw's DEFAULT_SUBAGENT_TOOL_DENY.
+// Subagents should not manage sessions, spawn recursively, or access memory/cron.
+var DefaultSubagentDeniedTools = []string{
+	// Subagent management tools (prevent recursion).
+	"spawn_subagent",
+	"list_subagents",
+	"wait_subagent",
+	"stop_subagent",
+	// Memory tools (subagents should not pollute parent's memory).
+	"memory_save",
+	"memory_search",
+	"memory_list",
+	"memory_index",
+	// Scheduler tools (subagents should not create cron jobs).
+	"cron_add",
+	"cron_remove",
+	// Skill management (subagents should not install/remove skills).
+	"install_skill",
+	"remove_skill",
+	"init_skill",
+}
+
 // DefaultSubagentConfig returns safe defaults.
 func DefaultSubagentConfig() SubagentConfig {
 	return SubagentConfig{
 		Enabled:        true,
-		MaxConcurrent:  4,
-		MaxTurns:       15,
+		MaxConcurrent:  8, // OpenClaw default: 8
+		MaxTurns:       0, // Unlimited (aligned with agent loop)
 		TimeoutSeconds: 300,
-		DeniedTools: []string{
-			"spawn_subagent",
-			"list_subagents",
-			"wait_subagent",
-		},
+		DeniedTools:    DefaultSubagentDeniedTools,
 	}
 }
 
@@ -308,7 +326,12 @@ func (m *SubagentManager) Spawn(
 
 		// Create and run the agent.
 		agent := NewAgentRun(childLLM, childExecutor, m.logger)
-		agent.maxTurns = m.cfg.MaxTurns
+		if m.cfg.MaxTurns > 0 {
+			agent.maxTurns = m.cfg.MaxTurns // 0 = unlimited (OpenClaw pattern)
+		}
+		// Subagent run timeout is driven by the context timeout set above,
+		// so set the agent's own run timeout generously (it won't exceed ctx).
+		agent.runTimeout = timeout + 30*time.Second
 
 		result, err := agent.Run(ctx, systemPrompt, nil, params.Task)
 
@@ -457,6 +480,7 @@ func (m *SubagentManager) Cleanup(maxAge time.Duration) int {
 
 // createChildExecutor creates a filtered ToolExecutor for the subagent,
 // excluding denied tools to prevent recursion and unsafe operations.
+// Supports group references (e.g. "group:memory") in the deny list.
 func (m *SubagentManager) createChildExecutor(parent *ToolExecutor) *ToolExecutor {
 	child := NewToolExecutor(m.logger)
 
@@ -469,12 +493,13 @@ func (m *SubagentManager) createChildExecutor(parent *ToolExecutor) *ToolExecuto
 	child.callerLevel = parent.callerLevel
 	child.callerJID = parent.callerJID
 
-	// Build deny set.
-	denySet := make(map[string]bool)
-	for _, name := range m.cfg.DeniedTools {
+	// Build deny set — expand group references (OpenClaw pattern).
+	expanded := ExpandToolGroups(m.cfg.DeniedTools)
+	denySet := make(map[string]bool, len(expanded)+4)
+	for _, name := range expanded {
 		denySet[name] = true
 	}
-	// Always deny subagent tools to prevent recursion.
+	// Always deny subagent tools to prevent recursion (safety net).
 	denySet["spawn_subagent"] = true
 	denySet["list_subagents"] = true
 	denySet["wait_subagent"] = true
@@ -499,25 +524,34 @@ func (m *SubagentManager) createChildExecutor(parent *ToolExecutor) *ToolExecuto
 	return child
 }
 
-// buildSubagentPrompt creates a focused system prompt for the subagent.
+// buildSubagentPrompt creates a focused, minimal system prompt for the subagent.
+// Aligned with OpenClaw: subagents get a lightweight bootstrap prompt, NOT the
+// full Compose() — this saves tokens and keeps the subagent focused on its task.
 func (m *SubagentManager) buildSubagentPrompt(composer *PromptComposer, session *Session, task string) string {
-	// Start with a minimal but focused prompt.
-	base := composer.Compose(session, task)
+	// Use ComposeMinimal instead of full Compose — saves ~60% of system prompt tokens.
+	base := composer.ComposeMinimal()
 
-	subagentInstructions := fmt.Sprintf(`
-## Subagent Mode
+	subagentInstructions := fmt.Sprintf(`# Subagent Context
 
-You are a subagent — a focused worker spawned by the main agent to handle a specific task.
+You are a **subagent** spawned by the main agent for a specific task.
 
-### Rules:
-- Focus ONLY on the task assigned to you.
-- Be concise and efficient; avoid unnecessary conversation.
-- You cannot spawn other subagents.
-- Complete the task and provide a clear, structured result.
-- If you encounter an error, explain what went wrong clearly.
+## Your Role
+- You were created to handle: %s
+- Complete this task. That's your entire purpose.
+- Be thorough and provide a clear, structured result.
+- If you encounter an error, try at least 2-3 alternative approaches before giving up.
 
-### Your Task:
-%s
+## Rules
+- Focus ONLY on the assigned task.
+- You cannot spawn other subagents (no recursion).
+- Do NOT ask the user questions — you have all the context you need.
+- When done, provide a concise summary of what you accomplished.
+- For coding tasks: include relevant file paths, changes made, and any issues found.
+
+## Persistence
+- Tool errors are hints, not stop signs. Fix the input and retry.
+- NEVER say "I cannot do X" unless you've exhausted every tool available.
+- Try alternative approaches when one fails.
 `, task)
 
 	return base + "\n" + subagentInstructions

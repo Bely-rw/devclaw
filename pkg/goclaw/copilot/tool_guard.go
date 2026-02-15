@@ -129,6 +129,38 @@ func DefaultToolGuardConfig() ToolGuardConfig {
 	}
 }
 
+// ── Tool Groups (aligned with OpenClaw's TOOL_GROUPS) ──
+// Groups can be used in Allow/Deny lists with "group:" prefix.
+// Example: deny: ["group:sessions", "group:runtime"]
+
+// ToolGroups maps group names to tool name lists.
+// Allows policy management at a higher level than individual tools.
+var ToolGroups = map[string][]string{
+	"group:memory":    {"memory_save", "memory_search", "memory_list", "memory_index"},
+	"group:web":       {"web_search", "web_fetch"},
+	"group:fs":        {"read_file", "write_file", "edit_file", "list_files", "search_files", "glob_files"},
+	"group:runtime":   {"bash", "exec", "ssh", "scp", "set_env"},
+	"group:subagents": {"spawn_subagent", "list_subagents", "wait_subagent", "stop_subagent"},
+	"group:skills":    {"install_skill", "remove_skill", "search_skills", "list_skills", "test_skill", "edit_skill", "add_script", "init_skill", "skill_defaults_list", "skill_defaults_install"},
+	"group:scheduler": {"cron_add", "cron_list", "cron_remove"},
+	"group:vault":     {"vault_save", "vault_get", "vault_list", "vault_delete"},
+	"group:media":     {"describe_image", "transcribe_audio", "image-gen_generate_image"},
+}
+
+// ExpandToolGroups expands group references (e.g. "group:memory") into
+// individual tool names. Non-group entries are passed through as-is.
+func ExpandToolGroups(names []string) []string {
+	var result []string
+	for _, name := range names {
+		if tools, ok := ToolGroups[name]; ok {
+			result = append(result, tools...)
+		} else {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
 // ToolGuard enforces security policies on tool execution.
 type ToolGuard struct {
 	cfg       ToolGuardConfig

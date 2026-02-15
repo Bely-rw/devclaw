@@ -420,7 +420,7 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 	e.mu.RUnlock()
 
 	if !ok {
-		result.Content = fmt.Sprintf("Error: unknown tool %q", name)
+		result.Content = formatToolError(name, fmt.Errorf("unknown tool %q", name))
 		result.Error = fmt.Errorf("unknown tool: %s", name)
 		e.logger.Warn("unknown tool called", "name", name)
 		return result
@@ -429,7 +429,7 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 	// Parse arguments from JSON string.
 	args, err := parseToolArgs(call.Function.Arguments)
 	if err != nil {
-		result.Content = fmt.Sprintf("Error parsing arguments: %v", err)
+		result.Content = formatToolError(name, fmt.Errorf("error parsing arguments: %w", err))
 		result.Error = err
 		e.logger.Warn("tool argument parse error", "name", name, "error", err)
 		return result
@@ -440,7 +440,7 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 	if guard != nil {
 		check = guard.Check(name, callerLevel, args)
 		if !check.Allowed {
-			result.Content = fmt.Sprintf("Access denied: %s", check.Reason)
+			result.Content = formatToolError(name, fmt.Errorf("access denied: %s", check.Reason))
 			result.Error = fmt.Errorf("access denied: %s", check.Reason)
 			e.logger.Warn("tool blocked by guard",
 				"name", name,
@@ -569,7 +569,7 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 		if hook.BeforeToolCall != nil {
 			modArgs, blocked, reason := hook.BeforeToolCall(name, args)
 			if blocked {
-				result.Content = fmt.Sprintf("Blocked by hook %q: %s", hook.Name, reason)
+				result.Content = formatToolError(name, fmt.Errorf("blocked by hook %q: %s", hook.Name, reason))
 				result.Error = fmt.Errorf("blocked by hook: %s", reason)
 				e.logger.Info("tool blocked by before-hook",
 					"tool", name, "hook", hook.Name, "reason", reason)
@@ -601,7 +601,9 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 	}
 
 	if err != nil {
-		result.Content = fmt.Sprintf("Error: %v", err)
+		// Structured JSON error result (OpenClaw pattern: { status, tool, error }).
+		// This makes tool errors parseable by the LLM for better retry logic.
+		result.Content = formatToolError(name, err)
 		result.Error = err
 		e.logger.Warn("tool execution failed",
 			"name", name,
@@ -617,6 +619,19 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 	// Serialize output to string.
 	result.Content = resultStr
 
+	// ── Tool result size guard (OpenClaw pattern) ──
+	// Cap oversized results proactively to prevent context overflow.
+	if len(result.Content) > HardMaxToolResultChars {
+		original := len(result.Content)
+		result.Content = result.Content[:HardMaxToolResultChars] + "\n\n... [truncated: result was " +
+			fmt.Sprintf("%d", original) + " chars, capped at " + fmt.Sprintf("%d", HardMaxToolResultChars) + "]"
+		e.logger.Warn("tool result truncated by size guard",
+			"name", name,
+			"original_chars", original,
+			"capped_at", HardMaxToolResultChars,
+		)
+	}
+
 	e.logger.Info("tool executed",
 		"name", name,
 		"duration_ms", duration.Milliseconds(),
@@ -629,6 +644,26 @@ func (e *ToolExecutor) executeSingle(ctx context.Context, call ToolCall) ToolRes
 	}
 
 	return result
+}
+
+// HardMaxToolResultChars is the absolute maximum size for a tool result.
+// Results exceeding this are truncated before entering the conversation.
+// Aligned with OpenClaw's HARD_MAX_TOOL_RESULT_CHARS.
+const HardMaxToolResultChars = 400_000
+
+// formatToolError creates a structured JSON error result (OpenClaw pattern).
+// This format is more parseable by the LLM than plain "Error: ..." text.
+func formatToolError(toolName string, err error) string {
+	errMsg := err.Error()
+	if len(errMsg) > 2000 {
+		errMsg = errMsg[:2000] + "... (truncated)"
+	}
+	b, _ := json.Marshal(map[string]string{
+		"status": "error",
+		"tool":   toolName,
+		"error":  errMsg,
+	})
+	return string(b)
 }
 
 // ---------- Conversion Helpers ----------
