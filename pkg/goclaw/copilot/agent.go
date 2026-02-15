@@ -90,6 +90,11 @@ type AgentRun struct {
 	// This enables Claude Code-style live message injection.
 	interruptCh <-chan string
 
+	// onBeforeToolExec is called right before tool execution starts.
+	// Used to flush any buffered stream text so the user sees the LLM's
+	// intermediate reasoning before tools run.
+	onBeforeToolExec func()
+
 	logger *slog.Logger
 }
 
@@ -142,6 +147,13 @@ func (a *AgentRun) SetModelOverride(model string) {
 // SetUsageRecorder sets a callback invoked after each successful LLM response.
 func (a *AgentRun) SetUsageRecorder(fn func(model string, usage LLMUsage)) {
 	a.usageRecorder = fn
+}
+
+// SetOnBeforeToolExec sets a callback fired right before tool execution starts
+// in the agent loop. Used by the block streamer to flush buffered text so the
+// user sees intermediate reasoning before tools run.
+func (a *AgentRun) SetOnBeforeToolExec(fn func()) {
+	a.onBeforeToolExec = fn
 }
 
 // SetInterruptChannel sets the channel for receiving follow-up user messages
@@ -283,6 +295,21 @@ func (a *AgentRun) RunWithUsage(ctx context.Context, systemPrompt string, histor
 				"turn", totalTurns,
 			)
 
+			// Flush any buffered stream text before tools start — ensures the user
+			// sees the LLM's intermediate reasoning/thoughts immediately.
+			if a.onBeforeToolExec != nil {
+				a.onBeforeToolExec()
+			}
+
+			// Send progress to the user so they see what the agent is doing
+			// while tools execute (especially for long-running tools).
+			if ps := ProgressSenderFromContext(ctx); ps != nil {
+				progressMsg := formatToolProgressMessage(resp.ToolCalls)
+				if progressMsg != "" {
+					ps(ctx, progressMsg)
+				}
+			}
+
 			results := a.executor.Execute(ctx, resp.ToolCalls)
 
 			a.logger.Info("tool calls complete",
@@ -357,6 +384,85 @@ func (a *AgentRun) RunWithUsage(ctx context.Context, systemPrompt string, histor
 		a.accumulateUsage(&totalUsage, resp)
 		return resp.Content, &totalUsage, nil
 	}
+}
+
+// formatToolProgressMessage creates a concise user-facing message about which
+// tools the agent is executing. Used to give the user visibility during the
+// "thinking" phase between LLM turns.
+func formatToolProgressMessage(toolCalls []ToolCall) string {
+	if len(toolCalls) == 0 {
+		return ""
+	}
+
+	// Map tool names to user-friendly descriptions.
+	icons := map[string]string{
+		"bash":          "🖥️",
+		"exec":          "🖥️",
+		"read_file":     "📄",
+		"write_file":    "✏️",
+		"edit_file":     "✏️",
+		"web_search":    "🔍",
+		"web_fetch":     "🌐",
+		"memory_save":   "💾",
+		"memory_search": "🧠",
+		"ssh":           "🔗",
+		"scp":           "📦",
+		"glob_files":    "📂",
+		"search_files":  "🔎",
+		"list_files":    "📂",
+	}
+
+	var parts []string
+	for _, tc := range toolCalls {
+		name := tc.Function.Name
+		icon := icons[name]
+		if icon == "" {
+			icon = "⚙️"
+		}
+
+		desc := icon + " " + name
+
+		// Add a hint from the args for key tools.
+		args, _ := parseToolArgs(tc.Function.Arguments)
+		switch name {
+		case "bash", "exec":
+			if cmd, ok := args["command"].(string); ok && cmd != "" {
+				if len(cmd) > 50 {
+					cmd = cmd[:50] + "..."
+				}
+				desc = icon + " `" + cmd + "`"
+			}
+		case "web_search":
+			if q, ok := args["query"].(string); ok && q != "" {
+				desc = icon + " Searching: " + q
+			}
+		case "web_fetch":
+			if u, ok := args["url"].(string); ok && u != "" {
+				if len(u) > 60 {
+					u = u[:60] + "..."
+				}
+				desc = icon + " " + u
+			}
+		case "read_file", "write_file", "edit_file":
+			if p, ok := args["path"].(string); ok && p != "" {
+				desc = icon + " " + p
+			}
+		case "claude-code_execute":
+			if p, ok := args["prompt"].(string); ok && p != "" {
+				if len(p) > 60 {
+					p = p[:60] + "..."
+				}
+				desc = "🤖 Claude Code: " + p
+			}
+		}
+
+		parts = append(parts, desc)
+	}
+
+	if len(parts) == 1 {
+		return "⏳ " + parts[0]
+	}
+	return "⏳ Executing:\n" + strings.Join(parts, "\n")
 }
 
 // isRecoverableToolError checks if a tool error is likely transient or due to

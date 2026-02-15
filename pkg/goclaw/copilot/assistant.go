@@ -1001,6 +1001,9 @@ func (a *Assistant) executeAgentWithStream(ctx context.Context, workspaceID stri
 	// Wire block streaming if provided.
 	if streamer != nil {
 		agent.SetStreamCallback(streamer.StreamCallback())
+		// Flush buffered text before tools start so the user sees intermediate
+		// reasoning/thoughts immediately instead of waiting for the full response.
+		agent.SetOnBeforeToolExec(streamer.FlushNow)
 	}
 
 	if a.usageTracker != nil {

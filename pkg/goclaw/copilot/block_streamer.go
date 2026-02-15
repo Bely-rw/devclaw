@@ -35,12 +35,13 @@ type BlockStreamConfig struct {
 }
 
 // DefaultBlockStreamConfig returns sensible defaults for block streaming.
+// Tuned for WhatsApp/chat UX: send text quickly so the user sees progress.
 func DefaultBlockStreamConfig() BlockStreamConfig {
 	return BlockStreamConfig{
 		Enabled:  true,
-		MinChars: 600,
-		MaxChars: 1200,
-		IdleMs:   1500,
+		MinChars: 150,  // Send small blocks early for real-time feel
+		MaxChars: 800,  // Reasonable block size for chat apps
+		IdleMs:   800,  // Flush quickly when LLM pauses (tool calls, thinking)
 	}
 }
 
@@ -48,13 +49,13 @@ func DefaultBlockStreamConfig() BlockStreamConfig {
 func (c BlockStreamConfig) Effective() BlockStreamConfig {
 	out := c
 	if out.MinChars <= 0 {
-		out.MinChars = 600
+		out.MinChars = 150
 	}
 	if out.MaxChars <= 0 {
-		out.MaxChars = 1200
+		out.MaxChars = 800
 	}
 	if out.IdleMs <= 0 {
-		out.IdleMs = 1500
+		out.IdleMs = 800
 	}
 	return out
 }
@@ -121,6 +122,22 @@ func (bs *BlockStreamer) StreamCallback() StreamCallback {
 	}
 }
 
+// FlushNow immediately sends any buffered text to the channel, regardless of
+// MinChars threshold. Use this before tool execution to ensure the user sees
+// the LLM's intermediate text (thoughts/reasoning) before tools start running.
+func (bs *BlockStreamer) FlushNow() {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+
+	if bs.done || bs.buf.Len() == 0 {
+		return
+	}
+	if bs.idleTimer != nil {
+		bs.idleTimer.Stop()
+	}
+	bs.flushLocked()
+}
+
 // Finish flushes any remaining buffer and marks the streamer as done.
 // Returns the full accumulated text (for session history).
 func (bs *BlockStreamer) Finish() {
@@ -161,8 +178,9 @@ func (bs *BlockStreamer) resetIdleTimer() {
 			return
 		}
 
-		// Only flush if we have enough chars or if it has been a while.
-		if bs.buf.Len() >= bs.cfg.MinChars {
+		// Flush whatever is buffered when idle — don't wait for MinChars.
+		// This ensures the user sees text promptly even for short responses.
+		if bs.buf.Len() > 0 {
 			bs.flushLocked()
 		}
 	})
