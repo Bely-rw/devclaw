@@ -13,7 +13,8 @@ import (
 
 const (
 	// ApprovalTimeout is how long to wait for user approval before giving up.
-	ApprovalTimeout = 60 * time.Second
+	// 120s gives ample time for users to read and respond via chat.
+	ApprovalTimeout = 120 * time.Second
 )
 
 // ApprovalResult holds the outcome of an approval request.

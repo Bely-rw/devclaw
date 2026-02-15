@@ -206,18 +206,21 @@ func (g *ToolGuard) Check(toolName string, callerLevel AccessLevel, args map[str
 	}
 
 	// Check if tool requires confirmation (after permission checks pass).
-	// For bash/exec, read-only commands (ls, cat, curl, etc.) skip confirmation.
+	// Owner-level callers skip confirmation entirely — they are trusted.
+	// For bash/exec, read-only commands (ls, cat, curl, etc.) also skip confirmation.
 	requiresConfirmation := false
-	for _, name := range g.cfg.RequireConfirmation {
-		if name == toolName {
-			requiresConfirmation = true
-			break
+	if callerLevel != AccessOwner {
+		for _, name := range g.cfg.RequireConfirmation {
+			if name == toolName {
+				requiresConfirmation = true
+				break
+			}
 		}
-	}
-	if requiresConfirmation && (toolName == "bash" || toolName == "exec") {
-		command, _ := args["command"].(string)
-		if isReadOnlyCommand(command) {
-			requiresConfirmation = false
+		if requiresConfirmation && (toolName == "bash" || toolName == "exec") {
+			command, _ := args["command"].(string)
+			if isReadOnlyCommand(command) {
+				requiresConfirmation = false
+			}
 		}
 	}
 

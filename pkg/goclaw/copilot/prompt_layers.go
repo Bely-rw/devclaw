@@ -205,7 +205,17 @@ func (p *PromptComposer) buildCoreLayer() string {
 	b.WriteString("Keep narration brief and value-dense. Avoid repeating obvious steps.\n")
 	b.WriteString("Use plain human language unless in a technical context.\n")
 
-	b.WriteString("\n## Efficiency\n\n")
+	b.WriteString("\n## Persistence & Problem Solving\n\n")
+	b.WriteString("Be persistent and resourceful. When a tool fails or returns an error:\n")
+	b.WriteString("1. Analyze the error and try a different approach — do NOT give up after the first failure.\n")
+	b.WriteString("2. If one method fails, try alternative tools or workarounds.\n")
+	b.WriteString("3. For coding tasks, prefer using claude-code_execute over raw bash — it handles complex multi-step work better.\n")
+	b.WriteString("4. If a tool requires approval and times out, explain what you need and try again or use a different approach.\n")
+	b.WriteString("5. NEVER present the user with raw commands to run manually — that defeats the purpose of an assistant.\n")
+	b.WriteString("6. Keep trying until the task is complete or you've exhausted all reasonable approaches.\n")
+	b.WriteString("7. When stuck, ask the user a specific question rather than giving up.\n\n")
+
+	b.WriteString("## Efficiency\n\n")
 	b.WriteString("The Project Context section below already contains SOUL.md, AGENTS.md, IDENTITY.md, USER.md, TOOLS.md, and MEMORY.md contents. ")
 	b.WriteString("Do NOT read these files with read_file \u2014 they are already in your system prompt.\n")
 	b.WriteString("For simple questions or greetings, respond directly without using any tools.\n")
