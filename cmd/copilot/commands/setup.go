@@ -699,7 +699,7 @@ func setupAdvanced(cfg *copilot.Config) error {
 		allowSudo      bool
 		confirmTools   = true
 		maxTurns       = fmt.Sprintf("%d", cfg.Agent.MaxTurns)
-		maxCont        = fmt.Sprintf("%d", cfg.Agent.MaxContinuations)
+		runTimeout     = fmt.Sprintf("%d", cfg.Agent.RunTimeoutSeconds)
 		subEnabled     = true
 		maxConcurrent  = fmt.Sprintf("%d", cfg.Subagents.MaxConcurrent)
 		visionEnabled  = cfg.Media.VisionEnabled
@@ -836,16 +836,16 @@ func setupAdvanced(cfg *copilot.Config) error {
 	err = huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Max turns per request").
-				Description("How many reasoning steps the agent can take (default: 25)").
-				Placeholder("25").
+				Title("Max turns per request (0 = unlimited)").
+				Description("Soft limit on reasoning steps; 0 = no limit (OpenClaw style)").
+				Placeholder("0").
 				Value(&maxTurns),
 
 			huh.NewInput().
-				Title("Max auto-continuations").
-				Description("Auto-continue when agent is still working (default: 2, 0=disable)").
-				Placeholder("2").
-				Value(&maxCont),
+				Title("Run timeout (seconds)").
+				Description("Max time for the entire agent run (default: 600 = 10 minutes)").
+				Placeholder("600").
+				Value(&runTimeout),
 
 			huh.NewConfirm().
 				Title("Enable subagent orchestration?").
@@ -886,8 +886,8 @@ func setupAdvanced(cfg *copilot.Config) error {
 	if n := parseInt(maxTurns, cfg.Agent.MaxTurns); n > 0 {
 		cfg.Agent.MaxTurns = n
 	}
-	if n := parseInt(maxCont, cfg.Agent.MaxContinuations); n >= 0 {
-		cfg.Agent.MaxContinuations = n
+	if n := parseInt(runTimeout, cfg.Agent.RunTimeoutSeconds); n > 0 {
+		cfg.Agent.RunTimeoutSeconds = n
 	}
 	cfg.Subagents.Enabled = subEnabled
 	if subEnabled {
@@ -947,7 +947,11 @@ func printSummary(cfg *copilot.Config, keyStorage storageMethod, installedSkills
 	if cfg.Security.ToolGuard.AllowSudo {
 		fmt.Println("  Sudo:       allowed (owner/admin)")
 	}
-	fmt.Printf("  Agent:      max %d turns, %d auto-continues\n", cfg.Agent.MaxTurns, cfg.Agent.MaxContinuations)
+	if cfg.Agent.MaxTurns > 0 {
+		fmt.Printf("  Agent:      max %d turns, timeout %ds\n", cfg.Agent.MaxTurns, cfg.Agent.RunTimeoutSeconds)
+	} else {
+		fmt.Printf("  Agent:      unlimited turns, timeout %ds\n", cfg.Agent.RunTimeoutSeconds)
+	}
 	if cfg.Subagents.Enabled {
 		fmt.Printf("  Subagents:  enabled (max %d concurrent)\n", cfg.Subagents.MaxConcurrent)
 	}

@@ -1,14 +1,14 @@
 // Package copilot – agent.go implements the agentic loop that orchestrates
 // LLM calls with tool execution. The agent iterates: call LLM → if tool_calls
 // → execute tools → append results → call LLM again, until the LLM produces
-// a final text response or the turn limit is reached.
+// a final text response with no tool calls.
 //
-// Autonomy features:
-//   - Configurable max turns (default: 25).
-//   - Auto-continue: when turns are exhausted but the agent is mid-task, it
-//     can automatically start a continuation run (up to MaxContinuations).
-//   - Reflection: the agent periodically sees a "[System: N turns used of M]"
-//     nudge so it can self-manage its budget.
+// Architecture (aligned with OpenClaw/pi-agent-core):
+//   - No fixed max turns — the loop runs until the LLM stops calling tools.
+//   - Single run timeout (default: 600s = 10min) controls the whole run.
+//   - Per-LLM-call safety timeout (5min) prevents individual hung requests.
+//   - Reflection nudge every 15 turns for budget awareness.
+//   - Auto-compaction on context overflow (up to 3 attempts).
 package copilot
 
 import (
@@ -20,21 +20,18 @@ import (
 )
 
 const (
-	// DefaultMaxTurns is the maximum number of LLM round-trips in a single agent run.
-	DefaultMaxTurns = 25
+	// DefaultRunTimeout is the maximum duration for an entire agent run.
+	// Aligned with OpenClaw's default of 600s (10 minutes).
+	// This is the PRIMARY timeout — no per-turn limit.
+	DefaultRunTimeout = 600 * time.Second
 
-	// DefaultTurnTimeout is the timeout for a single LLM call within the loop.
-	// 180s accommodates large contexts (turn 5+) where the LLM needs more time
-	// to process accumulated tool results. Most calls complete in 5-30s, but
-	// large contexts with streaming can take 60-120s on slower providers.
-	DefaultTurnTimeout = 180 * time.Second
-
-	// DefaultMaxContinuations is how many times the agent can auto-continue
-	// after exhausting its turn budget. 0 = no auto-continue.
-	DefaultMaxContinuations = 2
+	// DefaultLLMCallTimeout is the safety-net timeout for a single LLM API call.
+	// This only prevents hung HTTP connections — it should be generous enough
+	// that even large contexts complete. 5 minutes covers worst-case scenarios.
+	DefaultLLMCallTimeout = 5 * time.Minute
 
 	// reflectionInterval is how often (in turns) the agent receives a budget nudge.
-	reflectionInterval = 8
+	reflectionInterval = 15
 
 	// DefaultMaxCompactionAttempts is how many times to retry after context overflow compaction.
 	DefaultMaxCompactionAttempts = 3
@@ -42,15 +39,22 @@ const (
 
 // AgentConfig holds configurable agent loop parameters.
 type AgentConfig struct {
-	// MaxTurns is the max LLM round-trips per agent run (default: 25).
+	// RunTimeoutSeconds is the max seconds for the entire agent run (default: 600).
+	// Aligned with OpenClaw: one timer for the whole run, not per-turn.
+	RunTimeoutSeconds int `yaml:"run_timeout_seconds"`
+
+	// LLMCallTimeoutSeconds is the safety-net timeout per individual LLM call
+	// (default: 300). Only catches hung connections — not the primary timeout.
+	LLMCallTimeoutSeconds int `yaml:"llm_call_timeout_seconds"`
+
+	// MaxTurns is a soft safety limit on LLM round-trips (default: 0 = unlimited).
+	// When > 0, the agent will request a summary after this many turns.
+	// OpenClaw has no turn limit; set to 0 to match.
 	MaxTurns int `yaml:"max_turns"`
 
-	// TurnTimeoutSeconds is the max seconds per LLM call (default: 300).
-	TurnTimeoutSeconds int `yaml:"turn_timeout_seconds"`
-
 	// MaxContinuations is how many auto-continue rounds are allowed when
-	// the agent exhausts its turn budget while still using tools.
-	// 0 = disabled (agent must summarize). Default: 2.
+	// MaxTurns is hit and the agent is still using tools.
+	// Only relevant when MaxTurns > 0. Default: 2.
 	MaxContinuations int `yaml:"max_continuations"`
 
 	// ReflectionEnabled enables periodic budget awareness nudges (default: true).
@@ -63,9 +67,10 @@ type AgentConfig struct {
 // DefaultAgentConfig returns sensible defaults for agent autonomy.
 func DefaultAgentConfig() AgentConfig {
 	return AgentConfig{
-		MaxTurns:              DefaultMaxTurns,
-		TurnTimeoutSeconds:    int(DefaultTurnTimeout / time.Second),
-		MaxContinuations:      DefaultMaxContinuations,
+		RunTimeoutSeconds:     int(DefaultRunTimeout / time.Second),
+		LLMCallTimeoutSeconds: int(DefaultLLMCallTimeout / time.Second),
+		MaxTurns:              0, // Unlimited — OpenClaw pattern
+		MaxContinuations:      2,
 		ReflectionEnabled:     true,
 		MaxCompactionAttempts: DefaultMaxCompactionAttempts,
 	}
@@ -75,9 +80,9 @@ func DefaultAgentConfig() AgentConfig {
 type AgentRun struct {
 	llm                   *LLMClient
 	executor              *ToolExecutor
-	maxTurns              int
-	turnTimeout           time.Duration
-	maxContinuations      int
+	runTimeout            time.Duration // Total run timeout (default: 600s)
+	llmCallTimeout        time.Duration // Per-LLM-call safety timeout (default: 5min)
+	maxTurns              int           // 0 = unlimited (OpenClaw pattern)
 	reflectionOn          bool
 	maxCompactionAttempts int
 	streamCallback        StreamCallback
@@ -103,9 +108,9 @@ func NewAgentRun(llm *LLMClient, executor *ToolExecutor, logger *slog.Logger) *A
 	return &AgentRun{
 		llm:                   llm,
 		executor:              executor,
-		maxTurns:              DefaultMaxTurns,
-		turnTimeout:           DefaultTurnTimeout,
-		maxContinuations:      DefaultMaxContinuations,
+		runTimeout:            DefaultRunTimeout,
+		llmCallTimeout:        DefaultLLMCallTimeout,
+		maxTurns:              0, // Unlimited (OpenClaw pattern)
 		reflectionOn:          true,
 		maxCompactionAttempts: DefaultMaxCompactionAttempts,
 		logger:                logger.With("component", "agent"),
@@ -115,14 +120,14 @@ func NewAgentRun(llm *LLMClient, executor *ToolExecutor, logger *slog.Logger) *A
 // NewAgentRunWithConfig creates a new agent runner with explicit configuration.
 func NewAgentRunWithConfig(llm *LLMClient, executor *ToolExecutor, cfg AgentConfig, logger *slog.Logger) *AgentRun {
 	ar := NewAgentRun(llm, executor, logger)
-	if cfg.MaxTurns > 0 {
-		ar.maxTurns = cfg.MaxTurns
+	if cfg.RunTimeoutSeconds > 0 {
+		ar.runTimeout = time.Duration(cfg.RunTimeoutSeconds) * time.Second
 	}
-	if cfg.TurnTimeoutSeconds > 0 {
-		ar.turnTimeout = time.Duration(cfg.TurnTimeoutSeconds) * time.Second
+	if cfg.LLMCallTimeoutSeconds > 0 {
+		ar.llmCallTimeout = time.Duration(cfg.LLMCallTimeoutSeconds) * time.Second
 	}
-	if cfg.MaxContinuations >= 0 {
-		ar.maxContinuations = cfg.MaxContinuations
+	if cfg.MaxTurns >= 0 {
+		ar.maxTurns = cfg.MaxTurns // 0 = unlimited
 	}
 	ar.reflectionOn = cfg.ReflectionEnabled
 	if cfg.MaxCompactionAttempts > 0 {
@@ -176,7 +181,19 @@ func (a *AgentRun) Run(ctx context.Context, systemPrompt string, history []Conve
 }
 
 // RunWithUsage is like Run but also returns aggregated token usage from all LLM calls.
+//
+// Architecture (aligned with OpenClaw/pi-agent-core):
+//   - The loop runs until the LLM produces a response with no tool calls.
+//   - A single run-level timeout controls the entire execution (default: 600s).
+//   - Individual LLM calls have a safety-net timeout (5min) to catch hung connections.
+//   - No fixed turn limit — the agent keeps going as long as it has tools to call.
 func (a *AgentRun) RunWithUsage(ctx context.Context, systemPrompt string, history []ConversationEntry, userMessage string) (string, *LLMUsage, error) {
+	// ── Run-level timeout (OpenClaw pattern: single timer for the whole run) ──
+	runCtx, runCancel := context.WithTimeout(ctx, a.runTimeout)
+	defer runCancel()
+
+	runStart := time.Now()
+
 	// Build initial messages from history.
 	messages := a.buildMessages(systemPrompt, history, userMessage)
 
@@ -186,13 +203,13 @@ func (a *AgentRun) RunWithUsage(ctx context.Context, systemPrompt string, histor
 	a.logger.Debug("agent run started",
 		"history_entries", len(history),
 		"tools_available", len(tools),
+		"run_timeout_s", int(a.runTimeout.Seconds()),
 		"max_turns", a.maxTurns,
-		"max_continuations", a.maxContinuations,
 	)
 
 	// If no tools are registered, do a single completion and return.
 	if len(tools) == 0 {
-		resp, err := a.doLLMCallWithOverflowRetry(ctx, messages, nil)
+		resp, err := a.doLLMCallWithOverflowRetry(runCtx, messages, nil)
 		if err != nil {
 			return "", nil, err
 		}
@@ -203,212 +220,193 @@ func (a *AgentRun) RunWithUsage(ctx context.Context, systemPrompt string, histor
 
 	var totalUsage LLMUsage
 	totalTurns := 0
-	continuations := 0
 
+	// ── Main agent loop (OpenClaw/pi-agent-core pattern) ──
+	// Loop until: (1) LLM produces no tool calls, (2) run timeout fires, or
+	// (3) optional soft turn limit is hit. No fixed turn limit by default.
 	for {
-		// Agent loop: LLM call → tool execution → repeat.
-		exhausted := false
+		totalTurns++
+		turnStart := time.Now()
 
-		for turn := 1; turn <= a.maxTurns; turn++ {
-			totalTurns++
-			turnStart := time.Now()
+		a.logger.Debug("agent turn start",
+			"turn", totalTurns,
+			"messages", len(messages),
+			"run_elapsed_s", int(time.Since(runStart).Seconds()),
+		)
 
-			a.logger.Debug("agent turn start",
-				"turn", totalTurns,
-				"continuation", continuations,
-				"messages", len(messages),
+		// ── Soft turn limit (optional, 0 = disabled) ──
+		if a.maxTurns > 0 && totalTurns > a.maxTurns {
+			a.logger.Warn("agent reached soft turn limit, requesting summary",
+				"total_turns", totalTurns,
+				"max_turns", a.maxTurns,
 			)
-
-			// ── Interrupt injection ──
-			// Check for follow-up user messages sent while the agent was working.
-			if turn > 1 {
-				if interrupts := a.drainInterrupts(); len(interrupts) > 0 {
-					for _, interrupt := range interrupts {
-						messages = append(messages, chatMessage{
-							Role:    "user",
-							Content: "[Follow-up from user while processing]\n" + interrupt,
-						})
-					}
-					a.logger.Info("injected interrupt messages into agent loop",
-						"count", len(interrupts),
-						"turn", totalTurns,
-					)
-				}
-			}
-
-			// Inject reflection nudge periodically.
-			if a.reflectionOn && turn > 1 && turn%reflectionInterval == 0 {
-				messages = append(messages, chatMessage{
-					Role: "user",
-					Content: fmt.Sprintf(
-						"[System: %d/%d turns used. Plan your remaining work efficiently.]",
-						turn, a.maxTurns,
-					),
-				})
-			}
-
-			// Call LLM (with overflow retry and per-turn timeout inside).
-			llmStart := time.Now()
-			resp, err := a.doLLMCallWithOverflowRetry(ctx, messages, tools)
-			llmDuration := time.Since(llmStart)
+			messages = append(messages, chatMessage{
+				Role: "user",
+				Content: "[System: You have used many turns. " +
+					"Please provide your best response with the information gathered so far.]",
+			})
+			resp, err := a.doLLMCallWithOverflowRetry(runCtx, messages, nil)
 			if err != nil {
-				// If the parent context was cancelled (user abort), propagate immediately.
-				if ctx.Err() != nil {
-					return "", nil, fmt.Errorf("agent cancelled: %w", ctx.Err())
-				}
-
-				// Timeout or transient error on a later turn: try compacting
-				// the context and retrying once before giving up.
-				errStr := err.Error()
-				isTimeout := strings.Contains(errStr, "deadline exceeded") || strings.Contains(errStr, "context canceled")
-				if isTimeout && totalTurns > 2 && len(messages) > 10 {
-					a.logger.Warn("LLM call timed out, compacting context and retrying",
-						"turn", totalTurns,
-						"messages_before", len(messages),
-						"llm_ms", llmDuration.Milliseconds(),
-					)
-					messages = a.compactMessages(messages, 12)
-					messages = a.truncateToolResults(messages, 1500)
-
-					// Retry the LLM call with compacted context.
-					llmStart = time.Now()
-					resp, err = a.doLLMCallWithOverflowRetry(ctx, messages, tools)
-					llmDuration = time.Since(llmStart)
-				}
-
-				if err != nil {
-					return "", nil, fmt.Errorf("LLM call failed (turn %d, llm_ms=%d): %w",
-						totalTurns, llmDuration.Milliseconds(), err)
-				}
+				return "", nil, fmt.Errorf("final summary call failed: %w", err)
 			}
 			a.accumulateUsage(&totalUsage, resp)
+			return resp.Content, &totalUsage, nil
+		}
 
-			a.logger.Info("LLM call complete",
-				"turn", totalTurns,
-				"llm_ms", llmDuration.Milliseconds(),
-				"tool_calls", len(resp.ToolCalls),
-				"prompt_tokens", resp.Usage.PromptTokens,
-				"completion_tokens", resp.Usage.CompletionTokens,
-			)
+		// ── Run timeout check ──
+		if runCtx.Err() != nil {
+			return "", &totalUsage, fmt.Errorf("agent run timeout (%s) after %d turns: %w",
+				a.runTimeout, totalTurns, runCtx.Err())
+		}
 
-			// No tool calls → final response.
-			if len(resp.ToolCalls) == 0 {
-				a.logger.Info("agent completed",
-					"total_turns", totalTurns,
-					"continuations", continuations,
-					"response_len", len(resp.Content),
-					"turn_ms", time.Since(turnStart).Milliseconds(),
+		// ── Interrupt injection ──
+		// Check for follow-up user messages sent while the agent was working.
+		if totalTurns > 1 {
+			if interrupts := a.drainInterrupts(); len(interrupts) > 0 {
+				for _, interrupt := range interrupts {
+					messages = append(messages, chatMessage{
+						Role:    "user",
+						Content: "[Follow-up from user while processing]\n" + interrupt,
+					})
+				}
+				a.logger.Info("injected interrupt messages into agent loop",
+					"count", len(interrupts),
+					"turn", totalTurns,
 				)
-				return resp.Content, &totalUsage, nil
-			}
-
-			// Append assistant message with tool calls to the conversation.
-			messages = append(messages, chatMessage{
-				Role:      "assistant",
-				Content:   resp.Content,
-				ToolCalls: resp.ToolCalls,
-			})
-
-			// Execute all requested tool calls.
-			toolStart := time.Now()
-			toolNames := make([]string, len(resp.ToolCalls))
-			for i, tc := range resp.ToolCalls {
-				toolNames[i] = tc.Function.Name
-			}
-			a.logger.Info("executing tool calls",
-				"count", len(resp.ToolCalls),
-				"tools", strings.Join(toolNames, ","),
-				"turn", totalTurns,
-			)
-
-			// Flush any buffered stream text before tools start — ensures the user
-			// sees the LLM's intermediate reasoning/thoughts immediately.
-			if a.onBeforeToolExec != nil {
-				a.onBeforeToolExec()
-			}
-
-			// Send progress to the user so they see what the agent is doing
-			// while tools execute (especially for long-running tools).
-			if ps := ProgressSenderFromContext(ctx); ps != nil {
-				progressMsg := formatToolProgressMessage(resp.ToolCalls)
-				if progressMsg != "" {
-					ps(ctx, progressMsg)
-				}
-			}
-
-			results := a.executor.Execute(ctx, resp.ToolCalls)
-
-			a.logger.Info("tool calls complete",
-				"count", len(results),
-				"tools_ms", time.Since(toolStart).Milliseconds(),
-				"turn_ms", time.Since(turnStart).Milliseconds(),
-			)
-
-			// Append each tool result as a message.
-			// Classify recoverable errors: the model should retry silently without
-			// the user seeing transient failures (OpenClaw pattern).
-			for _, result := range results {
-				content := result.Content
-				if result.Error != nil && isRecoverableToolError(content) {
-					// Recoverable error — keep it in conversation for the model
-					// to see and retry, but don't surface to the user.
-					a.logger.Debug("recoverable tool error (model should retry)",
-						"tool", result.Name,
-						"error_preview", truncateStr(content, 80),
-					)
-				}
-				messages = append(messages, chatMessage{
-					Role:       "tool",
-					Content:    content,
-					ToolCallID: result.ToolCallID,
-				})
 			}
 		}
 
-		exhausted = true
-
-		// ── Auto-continue logic ──
-		// If the agent is still actively using tools and we have continuation budget,
-		// inject a continuation prompt and keep going.
-		if exhausted && continuations < a.maxContinuations {
-			continuations++
-
-			a.logger.Info("agent auto-continuing",
-				"continuation", continuations,
-				"max_continuations", a.maxContinuations,
-				"total_turns_so_far", totalTurns,
-			)
-
+		// Inject reflection nudge periodically so the agent is aware of duration.
+		if a.reflectionOn && totalTurns > 1 && totalTurns%reflectionInterval == 0 {
+			elapsed := time.Since(runStart).Seconds()
+			remaining := a.runTimeout.Seconds() - elapsed
 			messages = append(messages, chatMessage{
 				Role: "user",
 				Content: fmt.Sprintf(
-					"[System: Turn budget reached (%d turns). Auto-continuing (continuation %d/%d). "+
-						"You have %d more turns. Wrap up your current task or continue working.]",
-					a.maxTurns, continuations, a.maxContinuations, a.maxTurns,
+					"[System: %d turns completed, %.0fs elapsed, ~%.0fs remaining. Plan efficiently.]",
+					totalTurns, elapsed, remaining,
 				),
 			})
-
-			continue // Start another round of turns.
 		}
 
-		// No more continuations. Request a final summary.
-		a.logger.Warn("agent reached max turns and continuations, requesting summary",
-			"total_turns", totalTurns,
-			"continuations", continuations,
-		)
-
-		messages = append(messages, chatMessage{
-			Role: "user",
-			Content: "[System: You have used all available turns and continuations. " +
-				"Please provide your best response with the information gathered so far.]",
-		})
-
-		resp, err := a.doLLMCallWithOverflowRetry(ctx, messages, nil)
+		// ── Call LLM ──
+		llmStart := time.Now()
+		resp, err := a.doLLMCallWithOverflowRetry(runCtx, messages, tools)
+		llmDuration := time.Since(llmStart)
 		if err != nil {
-			return "", nil, fmt.Errorf("final summary call failed: %w", err)
+			// If the parent/run context was cancelled, propagate immediately.
+			if runCtx.Err() != nil {
+				// Distinguish user abort from run timeout.
+				if ctx.Err() != nil {
+					return "", &totalUsage, fmt.Errorf("agent cancelled by user: %w", ctx.Err())
+				}
+				return "", &totalUsage, fmt.Errorf("agent run timeout (%s) at turn %d: %w",
+					a.runTimeout, totalTurns, runCtx.Err())
+			}
+
+			// Timeout or transient error on a later turn: try compacting
+			// the context and retrying once before giving up.
+			errStr := err.Error()
+			isTimeout := strings.Contains(errStr, "deadline exceeded") || strings.Contains(errStr, "context canceled")
+			if isTimeout && totalTurns > 2 && len(messages) > 10 {
+				a.logger.Warn("LLM call timed out, compacting context and retrying",
+					"turn", totalTurns,
+					"messages_before", len(messages),
+					"llm_ms", llmDuration.Milliseconds(),
+				)
+				messages = a.compactMessages(messages, 12)
+				messages = a.truncateToolResults(messages, 1500)
+
+				// Retry the LLM call with compacted context.
+				llmStart = time.Now()
+				resp, err = a.doLLMCallWithOverflowRetry(runCtx, messages, tools)
+				llmDuration = time.Since(llmStart)
+			}
+
+			if err != nil {
+				return "", &totalUsage, fmt.Errorf("LLM call failed (turn %d, llm_ms=%d): %w",
+					totalTurns, llmDuration.Milliseconds(), err)
+			}
 		}
 		a.accumulateUsage(&totalUsage, resp)
-		return resp.Content, &totalUsage, nil
+
+		a.logger.Info("LLM call complete",
+			"turn", totalTurns,
+			"llm_ms", llmDuration.Milliseconds(),
+			"tool_calls", len(resp.ToolCalls),
+			"prompt_tokens", resp.Usage.PromptTokens,
+			"completion_tokens", resp.Usage.CompletionTokens,
+		)
+
+		// ── No tool calls → final response ──
+		if len(resp.ToolCalls) == 0 {
+			a.logger.Info("agent completed",
+				"total_turns", totalTurns,
+				"response_len", len(resp.Content),
+				"run_elapsed_ms", time.Since(runStart).Milliseconds(),
+			)
+			return resp.Content, &totalUsage, nil
+		}
+
+		// Append assistant message with tool calls to the conversation.
+		messages = append(messages, chatMessage{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+
+		// Execute all requested tool calls.
+		toolStart := time.Now()
+		toolNames := make([]string, len(resp.ToolCalls))
+		for i, tc := range resp.ToolCalls {
+			toolNames[i] = tc.Function.Name
+		}
+		a.logger.Info("executing tool calls",
+			"count", len(resp.ToolCalls),
+			"tools", strings.Join(toolNames, ","),
+			"turn", totalTurns,
+		)
+
+		// Flush any buffered stream text before tools start — ensures the user
+		// sees the LLM's intermediate reasoning/thoughts immediately.
+		if a.onBeforeToolExec != nil {
+			a.onBeforeToolExec()
+		}
+
+		// Send progress to the user so they see what the agent is doing
+		// while tools execute (especially for long-running tools).
+		if ps := ProgressSenderFromContext(runCtx); ps != nil {
+			progressMsg := formatToolProgressMessage(resp.ToolCalls)
+			if progressMsg != "" {
+				ps(runCtx, progressMsg)
+			}
+		}
+
+		results := a.executor.Execute(runCtx, resp.ToolCalls)
+
+		a.logger.Info("tool calls complete",
+			"count", len(results),
+			"tools_ms", time.Since(toolStart).Milliseconds(),
+			"turn_ms", time.Since(turnStart).Milliseconds(),
+		)
+
+		// Append each tool result as a message.
+		// Classify recoverable errors: the model should retry silently without
+		// the user seeing transient failures (OpenClaw pattern).
+		for _, result := range results {
+			content := result.Content
+			if result.Error != nil && isRecoverableToolError(content) {
+				a.logger.Debug("recoverable tool error (model should retry)",
+					"tool", result.Name,
+					"error_preview", truncateStr(content, 80),
+				)
+			}
+			messages = append(messages, chatMessage{
+				Role:       "tool",
+				Content:    content,
+				ToolCallID: result.ToolCallID,
+			})
+		}
 	}
 }
 
@@ -652,16 +650,26 @@ func (a *AgentRun) truncateToolResults(messages []chatMessage, maxLen int) []cha
 }
 
 // doLLMCallWithOverflowRetry runs the LLM call and retries with compaction on context overflow.
+// The per-call timeout is a safety net (llmCallTimeout, default 5min) — the primary timeout
+// is the run-level context passed in ctx.
+//
+// Compaction strategy (aligned with OpenClaw):
+//  1. First attempt: truncate oversized tool results (>4K chars).
+//  2. Second attempt: compact messages (keep last N) + truncate tool results harder.
+//  3. Third attempt: aggressive compaction (keep fewer messages).
 func (a *AgentRun) doLLMCallWithOverflowRetry(ctx context.Context, messages []chatMessage, tools []ToolDefinition) (*LLMResponse, error) {
-	keepRecent := 20 // Start by keeping last 20 messages.
+	toolResultTruncated := false
+	keepRecent := 20
+
 	for attempt := 0; attempt < a.maxCompactionAttempts; attempt++ {
-		turnCtx, cancel := context.WithTimeout(ctx, a.turnTimeout)
+		// Use the shorter of: run context deadline or llmCallTimeout safety net.
+		callCtx, cancel := context.WithTimeout(ctx, a.llmCallTimeout)
 		var resp *LLMResponse
 		var err error
 		if a.streamCallback != nil {
-			resp, err = a.llm.CompleteWithToolsStreamUsingModel(turnCtx, a.modelOverride, messages, tools, a.streamCallback)
+			resp, err = a.llm.CompleteWithToolsStreamUsingModel(callCtx, a.modelOverride, messages, tools, a.streamCallback)
 		} else {
-			resp, err = a.llm.CompleteWithFallbackUsingModel(turnCtx, a.modelOverride, messages, tools)
+			resp, err = a.llm.CompleteWithFallbackUsingModel(callCtx, a.modelOverride, messages, tools)
 		}
 		cancel()
 
@@ -676,16 +684,29 @@ func (a *AgentRun) doLLMCallWithOverflowRetry(ctx context.Context, messages []ch
 			return nil, err
 		}
 
-		a.logger.Info("context overflow detected, compacting and retrying",
+		a.logger.Info("context overflow detected",
 			"attempt", attempt+1,
 			"max_attempts", a.maxCompactionAttempts,
 			"messages_before", len(messages),
-			"keep_recent", keepRecent,
 		)
 
-		// Compact: keep system + last keepRecent.
+		// ── OpenClaw compaction strategy ──
+		// Step 1: Try truncating oversized tool results first (cheap operation).
+		if !toolResultTruncated {
+			if hasOversizedToolResults(messages, 4000) {
+				a.logger.Info("truncating oversized tool results before compaction")
+				messages = a.truncateToolResults(messages, 4000)
+				toolResultTruncated = true
+				continue // Retry without compacting messages.
+			}
+		}
+
+		// Step 2+3: Compact messages (keep system + last N).
+		a.logger.Info("compacting messages",
+			"keep_recent", keepRecent,
+			"messages_before", len(messages),
+		)
 		messages = a.compactMessages(messages, keepRecent)
-		// Truncate long tool results.
 		messages = a.truncateToolResults(messages, 2000)
 
 		// Next attempt: keep fewer messages.
@@ -696,4 +717,16 @@ func (a *AgentRun) doLLMCallWithOverflowRetry(ctx context.Context, messages []ch
 	}
 
 	return nil, fmt.Errorf("context overflow: compacted %d times but still exceeded context limit", a.maxCompactionAttempts)
+}
+
+// hasOversizedToolResults checks if any tool result message exceeds maxLen.
+func hasOversizedToolResults(messages []chatMessage, maxLen int) bool {
+	for _, m := range messages {
+		if m.Role == "tool" {
+			if s, ok := m.Content.(string); ok && len(s) > maxLen {
+				return true
+			}
+		}
+	}
+	return false
 }

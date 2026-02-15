@@ -1220,10 +1220,11 @@ func (a *Assistant) initScheduler() {
 		// Use a minimal agent config: 1 turn, short timeout, no continuations.
 		// The agent just needs to generate a single delivery response.
 		jobAgentCfg := AgentConfig{
-			MaxTurns:           1,
-			TurnTimeoutSeconds: 30,
-			MaxContinuations:   0,
-			ReflectionEnabled:  false,
+			MaxTurns:              1,
+			RunTimeoutSeconds:     60,
+			LLMCallTimeoutSeconds: 30,
+			MaxContinuations:      0,
+			ReflectionEnabled:     false,
 		}
 
 		agent := NewAgentRunWithConfig(a.llmClient, a.toolExecutor, jobAgentCfg, a.logger)
