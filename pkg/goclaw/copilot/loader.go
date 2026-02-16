@@ -63,6 +63,8 @@ func ParseConfig(data []byte) (*Config, error) {
 
 // SaveConfigToFile writes a Config as YAML to the specified path.
 // Secrets are replaced with environment variable references.
+// Creates a backup (.bak) of the existing file before overwriting to prevent
+// data loss from crashes or invalid writes.
 func SaveConfigToFile(cfg *Config, path string) error {
 	// Create a copy to sanitize before writing.
 	sanitized := *cfg
@@ -71,6 +73,20 @@ func SaveConfigToFile(cfg *Config, path string) error {
 	data, err := yaml.Marshal(&sanitized)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
+	}
+
+	// Validate the marshaled YAML is parseable before writing (sanity check).
+	var check map[string]any
+	if err := yaml.Unmarshal(data, &check); err != nil {
+		return fmt.Errorf("config validation failed (refusing to write corrupt data): %w", err)
+	}
+
+	// Backup existing file before overwriting.
+	if _, err := os.Stat(path); err == nil {
+		bakPath := path + ".bak"
+		if existing, err := os.ReadFile(path); err == nil {
+			_ = os.WriteFile(bakPath, existing, 0o600)
+		}
 	}
 
 	// Write with restricted permissions (owner read/write only).

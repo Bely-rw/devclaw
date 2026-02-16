@@ -62,7 +62,7 @@ func NewSessionPersistence(dir string, logger *slog.Logger) (*SessionPersistence
 		logger = slog.Default()
 	}
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create sessions dir %q: %w", dir, err)
 	}
 
@@ -103,7 +103,7 @@ func (p *SessionPersistence) SaveEntry(sessionID string, entry ConversationEntry
 	sanitized := sanitizeSessionID(sessionID)
 	path := filepath.Join(p.dir, sanitized+".jsonl")
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		p.logger.Error("failed to open session file for append", "session", sessionID, "err", err)
 		return fmt.Errorf("open session file: %w", err)
@@ -318,7 +318,7 @@ func (p *SessionPersistence) SaveFacts(sessionID string, facts []string) error {
 		return fmt.Errorf("marshal facts: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		p.logger.Error("failed to write facts", "session", sessionID, "err", err)
 		return fmt.Errorf("write facts: %w", err)
 	}
@@ -346,7 +346,7 @@ func (p *SessionPersistence) SaveMeta(sessionID, channel, chatID string, config 
 		return fmt.Errorf("marshal meta: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		p.logger.Error("failed to write meta", "session", sessionID, "err", err)
 		return fmt.Errorf("write meta: %w", err)
 	}
@@ -391,7 +391,7 @@ func (p *SessionPersistence) Rotate(sessionID string, maxLines int) error {
 		return fmt.Errorf("rename to bak: %w", err)
 	}
 
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("create fresh file: %w", err)
 	}

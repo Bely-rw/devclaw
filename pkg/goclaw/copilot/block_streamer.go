@@ -216,8 +216,11 @@ func (bs *BlockStreamer) flushLocked() {
 		}
 	}
 
-	// Format for channel.
+	// Format for channel (also strips reply tags like [[reply_to_current]]).
 	sendText = FormatForChannel(sendText, bs.channel)
+	if len(strings.TrimSpace(sendText)) == 0 {
+		return // Empty after stripping tags — nothing to send.
+	}
 
 	msg := &channels.OutgoingMessage{
 		Content: strings.TrimSpace(sendText),

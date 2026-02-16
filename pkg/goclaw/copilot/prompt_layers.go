@@ -287,9 +287,9 @@ func (p *PromptComposer) buildCoreLayer() string {
 	b.WriteString("If something needs attention, do NOT include \"HEARTBEAT_OK\"; reply with the alert text instead.\n")
 
 	b.WriteString("\n## Reasoning Format\n\n")
-	b.WriteString("ALL internal reasoning MUST be inside <thinking>...</thinking>.\n")
-	b.WriteString("Only the final user-visible reply may appear inside <final>...</final>.\n")
-	b.WriteString("Only text inside <final> is shown to the user; everything else is discarded.\n")
+	b.WriteString("Do NOT wrap your response in any XML tags (<final>, <thinking>, etc.).\n")
+	b.WriteString("Your ENTIRE text output is sent directly to the user as-is.\n")
+	b.WriteString("Think through problems internally; only output what the user should see.\n")
 
 	b.WriteString("\n## Memory\n\n")
 	b.WriteString("Before answering questions about prior work, preferences, or context, use memory_search to recall relevant information.\n")

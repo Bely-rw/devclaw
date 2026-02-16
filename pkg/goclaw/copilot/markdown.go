@@ -170,8 +170,59 @@ func FormatForPlainText(text string) string {
 	return strings.TrimSpace(text)
 }
 
+// Silent token constants — used by the LLM to signal special behavior.
+// These must be stripped from user-visible output.
+const (
+	TokenNoReply     = "NO_REPLY"
+	TokenHeartbeatOK = "HEARTBEAT_OK"
+)
+
+// replyTagRe matches internal reply tags like [[reply_to_current]] and
+// [[reply_to:<id>]]. These are instructions for the message delivery layer
+// and must be stripped before the user sees the text.
+var replyTagRe = regexp.MustCompile(`\[\[reply_to[^\]]*\]\]`)
+
+// internalTagRe matches XML-style internal tags that should never reach the
+// user: <final>, </final>, <thinking>, </thinking>, and their content when
+// it duplicates the already-streamed response.
+var internalTagRe = regexp.MustCompile(`</?(?:final|thinking|reasoning)>`)
+
+// duplicatedFinalRe matches <final>...</final> blocks that contain a full
+// duplicate of the response (LLM wrapping already-streamed text). The entire
+// block including content is removed to prevent duplication.
+var duplicatedFinalRe = regexp.MustCompile(`(?s)<final>\s*(.*?)\s*</final>`)
+
+// StripInternalTags removes all internal control tags and sentinel tokens
+// from LLM output so they never reach the user. Handles:
+//   - [[reply_to_*]] delivery tags
+//   - <final>...</final> and <thinking>...</thinking> XML tags
+//   - NO_REPLY / HEARTBEAT_OK sentinel tokens
+func StripInternalTags(text string) string {
+	// First: remove full <final>...</final> blocks — these typically contain
+	// a duplicate of the already-streamed response.
+	text = duplicatedFinalRe.ReplaceAllString(text, "")
+
+	// Remove any remaining standalone open/close tags.
+	text = internalTagRe.ReplaceAllString(text, "")
+
+	// Remove reply tags and sentinel tokens.
+	text = replyTagRe.ReplaceAllString(text, "")
+	text = strings.ReplaceAll(text, TokenNoReply, "")
+	text = strings.ReplaceAll(text, TokenHeartbeatOK, "")
+
+	return strings.TrimSpace(text)
+}
+
+// StripReplyTags is an alias for StripInternalTags for backward compatibility.
+func StripReplyTags(text string) string {
+	return StripInternalTags(text)
+}
+
 // FormatForChannel dispatches to the appropriate formatter based on channel.
+// Reply tags ([[reply_to_current]], [[reply_to:<id>]]) are stripped before
+// formatting so they never reach the user.
 func FormatForChannel(text, channel string) string {
+	text = StripReplyTags(text)
 	ch := strings.ToLower(strings.TrimSpace(channel))
 	switch ch {
 	case "whatsapp":

@@ -389,22 +389,24 @@ func (a *AgentRun) RunWithUsage(ctx context.Context, systemPrompt string, histor
 
 		// Send progress to the user so they see what the agent is doing
 		// while tools execute (especially for long-running tools).
-		// Priority: (1) LLM's own text before tool calls (real thinking),
-		// (2) concise tool description as fallback.
+		// When a stream callback (BlockStreamer) is active, it already delivers
+		// the LLM's text progressively — sending resp.Content via ProgressSender
+		// would duplicate messages. Only send tool descriptions as progress.
 		if ps := ProgressSenderFromContext(runCtx); ps != nil {
 			now := time.Now()
 			if now.Sub(lastProgressAt) >= progressCooldown {
 				var progressMsg string
 
-				// If the LLM emitted text alongside tool calls, that IS the
-				// real "thinking" — send it directly instead of a generic label.
-				if resp.Content != "" && len(resp.Content) < 1000 {
+				if a.streamCallback != nil {
+					// BlockStreamer is active and already sent resp.Content
+					// to the channel — only send a tool description as progress.
+					progressMsg = formatToolProgressMessage(resp.ToolCalls)
+				} else if resp.Content != "" && len(resp.Content) < 1000 {
+					// No streamer — send the LLM's own text as progress.
 					progressMsg = resp.Content
 				} else if resp.Content != "" {
-					// Truncate long thinking to a reasonable preview.
 					progressMsg = resp.Content[:500] + "..."
 				} else {
-					// No LLM text — fall back to tool description.
 					progressMsg = formatToolProgressMessage(resp.ToolCalls)
 				}
 

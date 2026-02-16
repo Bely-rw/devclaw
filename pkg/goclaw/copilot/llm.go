@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,6 +36,16 @@ type LLMClient struct {
 	fallback   FallbackConfig
 	httpClient *http.Client
 	logger     *slog.Logger
+
+	// Rate-limit cooldown tracking for auto-recovery.
+	// When the primary model hits a rate limit, we record when the cooldown
+	// expires and which fallback model we're using. Once the cooldown nears
+	// expiry, we probe the primary model to see if it recovered.
+	cooldownMu       sync.Mutex
+	cooldownExpires  time.Time     // when primary model cooldown expires
+	cooldownModel    string        // the model that was rate-limited
+	lastProbeAt      time.Time     // avoid probe storms
+	probeMinInterval time.Duration // min time between probe attempts
 }
 
 // NewLLMClient creates a new LLM client from config.
@@ -55,11 +66,12 @@ func NewLLMClient(cfg *Config, logger *slog.Logger) *LLMClient {
 	}
 
 	return &LLMClient{
-		baseURL:  baseURL,
-		provider: provider,
-		apiKey:   cfg.API.APIKey,
-		model:    cfg.Model,
-		fallback: cfg.Fallback.Effective(),
+		baseURL:          baseURL,
+		provider:         provider,
+		apiKey:           cfg.API.APIKey,
+		model:            cfg.Model,
+		fallback:         cfg.Fallback.Effective(),
+		probeMinInterval: 30 * time.Second,
 		httpClient: &http.Client{
 			// No global timeout here — each call uses context.WithTimeout
 			// for precise per-call control. A global timeout would race with
@@ -1709,8 +1721,92 @@ func (c *LLMClient) CompleteWithFallback(ctx context.Context, messages []chatMes
 	return c.CompleteWithFallbackUsingModel(ctx, "", messages, tools)
 }
 
+// --- Rate-limit cooldown auto-recovery ---
+
+// setCooldown records that a model hit a rate limit and sets the cooldown expiry.
+func (c *LLMClient) setCooldown(model string, retryAfterSec int) {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+
+	duration := time.Duration(retryAfterSec) * time.Second
+	if duration < 30*time.Second {
+		duration = 60 * time.Second // minimum 1 minute cooldown
+	}
+	if duration > 10*time.Minute {
+		duration = 10 * time.Minute // cap at 10 minutes
+	}
+
+	c.cooldownModel = model
+	c.cooldownExpires = time.Now().Add(duration)
+	c.logger.Info("model rate-limited, entering cooldown",
+		"model", model,
+		"cooldown_seconds", int(duration.Seconds()),
+		"expires_at", c.cooldownExpires.Format(time.RFC3339),
+	)
+}
+
+// shouldProbePrimary returns true if the primary model was rate-limited, the
+// cooldown is near expiry (within 10s) or already expired, and we haven't
+// probed too recently. This allows auto-recovery without restart.
+func (c *LLMClient) shouldProbePrimary(primary string) bool {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+
+	if c.cooldownModel != primary || c.cooldownExpires.IsZero() {
+		return false // no active cooldown for this model
+	}
+
+	now := time.Now()
+
+	// Only probe if cooldown is near expiry (within 10s) or already expired.
+	timeUntilExpiry := time.Until(c.cooldownExpires)
+	if timeUntilExpiry > 10*time.Second {
+		return false
+	}
+
+	// Throttle probes to avoid storms.
+	if now.Sub(c.lastProbeAt) < c.probeMinInterval {
+		return false
+	}
+
+	return true
+}
+
+// markProbed records that a probe was attempted.
+func (c *LLMClient) markProbed() {
+	c.cooldownMu.Lock()
+	c.lastProbeAt = time.Now()
+	c.cooldownMu.Unlock()
+}
+
+// clearCooldown removes cooldown for a model (recovery successful).
+func (c *LLMClient) clearCooldown(model string) {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+
+	if c.cooldownModel == model {
+		c.logger.Info("primary model recovered from rate-limit", "model", model)
+		c.cooldownModel = ""
+		c.cooldownExpires = time.Time{}
+	}
+}
+
+// isInCooldown returns true if the given model is currently rate-limited.
+func (c *LLMClient) isInCooldown(model string) bool {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+
+	if c.cooldownModel != model {
+		return false
+	}
+	return time.Now().Before(c.cooldownExpires)
+}
+
 // CompleteWithFallbackUsingModel is like CompleteWithFallback but uses modelOverride
 // as the primary model when non-empty. Empty = use c.model.
+// Includes auto-recovery: when the primary model hits a rate limit, subsequent
+// calls use fallback models. Near cooldown expiry, a probe is sent to the
+// primary model to check if it recovered. On success, cooldown is cleared.
 func (c *LLMClient) CompleteWithFallbackUsingModel(ctx context.Context, modelOverride string, messages []chatMessage, tools []ToolDefinition) (*LLMResponse, error) {
 	if c.apiKey == "" && c.provider != "ollama" {
 		return nil, fmt.Errorf("API key not configured. Run 'copilot config set-key' or set GOCLAW_API_KEY")
@@ -1728,11 +1824,49 @@ func (c *LLMClient) CompleteWithFallbackUsingModel(ctx context.Context, modelOve
 	initialBackoff := time.Duration(c.fallback.InitialBackoffMs) * time.Millisecond
 	maxBackoff := time.Duration(c.fallback.MaxBackoffMs) * time.Millisecond
 
+	// Auto-recovery probe: if the primary model was rate-limited and cooldown
+	// is near expiry, try a probe call to see if it recovered before using
+	// fallbacks. This avoids staying on fallback models indefinitely.
+	if c.shouldProbePrimary(primary) {
+		c.markProbed()
+		c.logger.Info("probing primary model for recovery", "model", primary)
+
+		probeCtx, probeCancel := context.WithTimeout(ctx, 30*time.Second)
+		resp, err := c.completeOnce(probeCtx, primary, messages, tools)
+		probeCancel()
+
+		if err == nil {
+			c.clearCooldown(primary)
+			return resp, nil
+		}
+
+		// Probe failed — stay on fallback models.
+		apierr, isAPI := err.(*apiError)
+		if isAPI && apierr.statusCode == 429 {
+			retryAfterSec := apierr.retryAfterSec
+			if retryAfterSec <= 0 {
+				retryAfterSec = 60
+			}
+			c.setCooldown(primary, retryAfterSec)
+		}
+		c.logger.Info("primary model still rate-limited", "model", primary, "error", err)
+	}
+
 	var lastErr error
 	for _, model := range models {
+		// Skip models currently in cooldown (rate-limited).
+		if c.isInCooldown(model) {
+			c.logger.Debug("skipping model in cooldown", "model", model)
+			continue
+		}
+
 		for attempt := 0; attempt <= c.fallback.MaxRetries; attempt++ {
 			resp, err := c.completeOnce(ctx, model, messages, tools)
 			if err == nil {
+				// If this is the primary model recovering, clear cooldown.
+				if model == primary {
+					c.clearCooldown(model)
+				}
 				return resp, nil
 			}
 
@@ -1741,11 +1875,22 @@ func (c *LLMClient) CompleteWithFallbackUsingModel(ctx context.Context, modelOve
 			// Extract status code and body for classification
 			statusCode := 0
 			body := ""
+			retryAfterSec := 0
 			if apierr, ok := err.(*apiError); ok {
 				statusCode = apierr.statusCode
 				body = apierr.body
+				retryAfterSec = apierr.retryAfterSec
 			}
 			kind := classifyAPIError(statusCode, body)
+
+			// Rate limit: set cooldown and move to next model immediately.
+			if kind == LLMErrorRateLimit {
+				if retryAfterSec <= 0 {
+					retryAfterSec = 60
+				}
+				c.setCooldown(model, retryAfterSec)
+				break // skip remaining retries for this model
+			}
 
 			// Non-retryable: fail immediately (auth, billing, context, bad request)
 			if !kind.IsRetryableKind() || !c.isRetryable(statusCode) {

@@ -474,6 +474,13 @@ func (s *Scheduler) executeJob(job *Job) {
 	job.RunCount++
 	s.mu.Unlock()
 
+	// Persist LastRunAt immediately so that if the process crashes during
+	// execution, the job won't fire again immediately on restart (avoiding
+	// the 48h skip bug seen in cron implementations).
+	if s.storage != nil {
+		s.storage.Save(job)
+	}
+
 	if s.handler == nil {
 		job.LastError = "no handler configured"
 		return

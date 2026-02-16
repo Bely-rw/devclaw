@@ -946,7 +946,11 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 		}
 		lastProgressAt = time.Now()
 		lastProgressMu.Unlock()
-		outMsg := &channels.OutgoingMessage{Content: FormatForChannel(progressMsg, msg.Channel)}
+		formatted := FormatForChannel(progressMsg, msg.Channel)
+		if formatted == "" {
+			return
+		}
+		outMsg := &channels.OutgoingMessage{Content: formatted}
 		_ = a.channelMgr.Send(a.ctx, msg.Channel, msg.ChatID, outMsg)
 	})
 
@@ -2108,8 +2112,17 @@ func (a *Assistant) buildTTSProvider() tts.Provider {
 
 // maybeSendTTS synthesizes audio from the response text and sends it as a
 // voice message, depending on the TTS auto-mode configuration.
+// Skips synthesis for silent tokens (NO_REPLY, HEARTBEAT_OK) and empty
+// responses to prevent sending audio of internal control tokens.
 func (a *Assistant) maybeSendTTS(msg *channels.IncomingMessage, response string) {
 	if a.ttsProvider == nil || response == "" {
+		return
+	}
+
+	// Skip TTS for silent tokens — the agent used a tool to deliver its
+	// response and the text output is just a control token, not user content.
+	trimmed := strings.TrimSpace(response)
+	if strings.EqualFold(trimmed, TokenNoReply) || strings.EqualFold(trimmed, TokenHeartbeatOK) {
 		return
 	}
 
@@ -2161,6 +2174,9 @@ func (a *Assistant) maybeSendTTS(msg *channels.IncomingMessage, response string)
 
 func (a *Assistant) sendReply(original *channels.IncomingMessage, content string) {
 	content = FormatForChannel(content, original.Channel)
+	if content == "" {
+		return // Nothing to send (e.g. NO_REPLY, HEARTBEAT_OK, or only tags).
+	}
 
 	maxLen := MaxMessageDefault
 	// Could be per-channel configurable later (e.g. WhatsApp: MaxMessageWhatsApp)

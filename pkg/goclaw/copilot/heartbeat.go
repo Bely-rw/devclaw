@@ -160,7 +160,7 @@ func (h *Heartbeat) tick(ctx context.Context) {
 
 	// If the response is just HEARTBEAT_OK or empty, skip delivery.
 	trimmed := strings.TrimSpace(response)
-	if trimmed == "" || strings.EqualFold(trimmed, "HEARTBEAT_OK") || strings.EqualFold(trimmed, "NO_REPLY") {
+	if trimmed == "" || strings.EqualFold(trimmed, TokenHeartbeatOK) || strings.EqualFold(trimmed, TokenNoReply) {
 		h.logger.Debug("heartbeat: nothing to deliver")
 		return
 	}
