@@ -2,6 +2,67 @@
 
 All notable changes to GoClaw are documented in this file.
 
+## [1.5.0] — 2026-02-16
+
+Media processing, document enrichment, WhatsApp UX overhaul, comprehensive security hardening, agent intelligence improvements, and full unit test coverage.
+
+### Media & Document Processing
+
+- **Document parsing**: Automatic text extraction from PDF (`pdftotext`), DOCX (`unzip` + XML strip), and 30+ plain text formats (code files, CSV, JSON, YAML, Markdown, etc.)
+- **Video enrichment**: First-frame extraction via `ffmpeg` + Vision API description — agent sees `[Video: description]` in context
+- **Auto-send generated images**: New `onToolResult` hook on `AgentRun` detects `generate_image` tool output and sends the image file directly to the user's channel as media — no more "image saved to /tmp/..." text responses
+- **Async media pipeline**: Document and video enrichment wired into the existing background media processing with placeholder → enriched content flow
+- **System prompt documentation**: Agent is informed of media capabilities and how to install system dependencies (`poppler-utils`, `ffmpeg`, `unzip`)
+
+### WhatsApp UX
+
+- **Message duplication fix**: Steer mode now injects OR enqueues (never both) — each message processed exactly once; eliminates duplicate and triple responses to `/stop`
+- **Message fragmentation fix**: BlockStreamer params tuned — MinChars 20→200, MaxChars 600→1500, IdleMs 200→1500 — produces coherent paragraphs instead of 4-word fragments
+- **Progress flood eliminated**: `ProgressSender` now has per-channel cooldown (60s WhatsApp, 10s WebUI); removed duplicate heartbeats from tool_executor and claude-code skill
+- **Queue modes operational**: All 5 modes (collect, steer, followup, interrupt, steer-backlog) fully implemented; removed hardcoded "Recebi sua mensagem..." canned response; default changed from collect→steer
+
+### Agent Intelligence
+
+- **Subagent delegation rewrite**: Complete rewrite of subagent section in system prompt with detailed workflow, concrete examples, and clear rules for when to delegate
+- **Parallel task handling**: New "Handling New Messages During Work" prompt section — agent uses `spawn_subagent` for parallel tasks and recognizes follow-ups vs new requests
+- **Media awareness**: System prompt now documents all media types the agent can receive and process (images, audio, documents, video)
+
+### Security Hardening
+
+- **Output sanitization**: Strip `[[reply_to_*]]`, `<final>`, `<thinking>`, `NO_REPLY`, `HEARTBEAT_OK` from all outgoing messages via `StripInternalTags` in `FormatForChannel`
+- **Empty message guards**: Prevent sending blank messages after tag stripping in `sendReply`, `BlockStreamer`, and `ProgressSender`
+- **File permissions hardened**: Session transcripts/facts/meta files 0644→0600 (owner-only); sessions directory 0755→0700
+- **Config save safety**: YAML validation before writing + `.bak` backup creation
+- **TTS duplicate prevention**: Skip TTS synthesis for `NO_REPLY`/`HEARTBEAT_OK` silent tokens
+- **Centralized constants**: `TokenNoReply` and `TokenHeartbeatOK` exported as constants
+
+### LLM Reliability
+
+- **Rate-limit auto-recovery**: Per-model cooldown tracking on 429 responses (duration from `Retry-After` header, min 60s, max 10min)
+- **Smart fallback**: Rate-limited models skipped in fallback loop; periodic probe near cooldown expiry (within 10s, throttled at 30s between probes) for automatic recovery without restart
+- **Cron reliability**: `LastRunAt` persisted before job execution (not after) to prevent duplicate fires on crash recovery
+
+### Setup & Configuration
+
+- **Vault in setup wizard**: Dedicated vault password field in StepSecurity with toggle for separate vault vs WebUI password
+- **Owner phone in setup**: Setup wizard collects owner phone number, formats as WhatsApp JID — owner gets full tool access (bash, exec, write_file, etc.)
+- **Skill installation from WebUI**: New endpoints `GET /api/skills/available`, `POST /api/skills/install`, `POST /api/skills/{name}/toggle`; modal with search and categories in the Skills page
+
+### Testing
+
+- **259 test cases across 13 files** covering 3 phases:
+  - *Pure logic*: markdown formatting, message splitting, queue modes, config loading, memory hardening, session keys
+  - *Security*: SSRF protection, input/output guardrails, rate limiting, vault encryption, keyring injection
+  - *Stateful components*: tool guard permissions, access control, skill registry
+- **Makefile integration**: `make test` and `make test-v` targets with `-race` detector and `sqlite_fts5` tag
+- All tests run with `t.Parallel()` where safe, table-driven patterns, `t.TempDir()` for isolation
+
+### Dependencies
+
+- System: `poppler-utils` (PDF), `ffmpeg` (video), `unzip` (DOCX) — optional, graceful fallback when missing
+
+---
+
 ## [1.4.0] — 2026-02-16
 
 Performance improvements, new concurrency architecture, advanced agent capabilities, comprehensive security hardening, and new tools.
