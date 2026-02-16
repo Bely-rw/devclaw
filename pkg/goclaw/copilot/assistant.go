@@ -1168,6 +1168,12 @@ func (a *Assistant) executeAgentWithStream(ctx context.Context, workspaceID stri
 		agent.SetOnBeforeToolExec(streamer.FlushNow)
 	}
 
+	// Wire auto-send media hook for tools that produce files (e.g. generate_image).
+	dt := DeliveryTargetFromContext(ctx)
+	if dt.Channel != "" {
+		agent.SetOnToolResult(a.makeToolResultHook(dt.Channel, dt.ChatID))
+	}
+
 	if a.usageTracker != nil {
 		agent.SetUsageRecorder(func(model string, usage LLMUsage) {
 			a.usageTracker.Record(session.ID, model, usage)
@@ -1843,7 +1849,6 @@ func (a *Assistant) enrichMessageContentFast(msg *channels.IncomingMessage, logg
 		if !media.VisionEnabled {
 			return msg.Content, false
 		}
-		// Return text with placeholder — media will be processed async.
 		placeholder := "[Analyzing image... results will follow]"
 		if msg.Content != "" {
 			return fmt.Sprintf("%s\n\n%s", msg.Content, placeholder), true
@@ -1855,6 +1860,23 @@ func (a *Assistant) enrichMessageContentFast(msg *channels.IncomingMessage, logg
 			return msg.Content, false
 		}
 		placeholder := "[Transcribing audio... results will follow]"
+		if msg.Content != "" {
+			return fmt.Sprintf("%s\n\n%s", msg.Content, placeholder), true
+		}
+		return placeholder, true
+
+	case channels.MessageDocument:
+		placeholder := "[Reading document... results will follow]"
+		if msg.Content != "" {
+			return fmt.Sprintf("%s\n\n%s", msg.Content, placeholder), true
+		}
+		return placeholder, true
+
+	case channels.MessageVideo:
+		if !media.VisionEnabled {
+			return msg.Content, false
+		}
+		placeholder := "[Analyzing video... results will follow]"
 		if msg.Content != "" {
 			return fmt.Sprintf("%s\n\n%s", msg.Content, placeholder), true
 		}
@@ -1881,6 +1903,10 @@ func (a *Assistant) enrichMediaAsync(ctx context.Context, msg *channels.Incoming
 		result = fmt.Sprintf("[Media enrichment complete]\n%s", enriched)
 	case channels.MessageAudio:
 		result = fmt.Sprintf("[Audio transcription complete]\n%s", enriched)
+	case channels.MessageDocument:
+		result = fmt.Sprintf("[Document content extracted]\n%s", enriched)
+	case channels.MessageVideo:
+		result = fmt.Sprintf("[Video analysis complete]\n%s", enriched)
 	default:
 		result = enriched
 	}
@@ -1970,6 +1996,37 @@ func (a *Assistant) enrichMessageContent(ctx context.Context, msg *channels.Inco
 		content = strings.ReplaceAll(content, "[audio]", transcript)
 		content = strings.ReplaceAll(content, "[voice note]", transcript)
 		return content
+
+	case channels.MessageDocument:
+		text := extractDocumentText(data, msg.Media.MimeType, msg.Media.Filename, logger)
+		if text == "" {
+			logger.Warn("no text extracted from document", "filename", msg.Media.Filename)
+			return msg.Content
+		}
+		// Truncate very large documents to avoid context overflow.
+		const maxDocChars = 30000
+		if len(text) > maxDocChars {
+			text = text[:maxDocChars] + "\n... [truncated — document too large]"
+		}
+		logger.Info("document text extracted", "chars", len(text), "filename", msg.Media.Filename)
+		if msg.Content != "" {
+			return fmt.Sprintf("[Document: %s]\n%s\n\n%s", msg.Media.Filename, text, msg.Content)
+		}
+		return fmt.Sprintf("[Document: %s]\n%s", msg.Media.Filename, text)
+
+	case channels.MessageVideo:
+		if !media.VisionEnabled {
+			return msg.Content
+		}
+		desc := extractVideoFrame(ctx, data, mimeType, a.llmClient, media, logger)
+		if desc == "" {
+			return msg.Content
+		}
+		logger.Info("video frame described via vision API", "desc_len", len(desc))
+		if msg.Content != "" {
+			return fmt.Sprintf("[Video: %s]\n\n%s", desc, msg.Content)
+		}
+		return fmt.Sprintf("[Video: %s]", desc)
 	}
 
 	return msg.Content
@@ -2169,6 +2226,47 @@ func (a *Assistant) maybeSendTTS(msg *channels.IncomingMessage, response string)
 	}
 	if err := a.channelMgr.SendMedia(a.ctx, msg.Channel, msg.ChatID, media); err != nil {
 		a.logger.Warn("failed to send TTS audio", "error", err)
+	}
+}
+
+// makeToolResultHook returns a callback that auto-sends media files produced by
+// tools (e.g. generate_image) to the channel. This avoids the LLM having to
+// describe "image saved to /tmp/..." — the user sees the actual image.
+func (a *Assistant) makeToolResultHook(channel, chatID string) func(string, ToolResult) {
+	return func(toolName string, result ToolResult) {
+		if toolName != "generate_image" && toolName != "image-gen_generate_image" {
+			return
+		}
+		// Parse the JSON result to find image_path.
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(result.Content), &parsed); err != nil {
+			// Try extracting from the stringified map format.
+			return
+		}
+		imgPath, _ := parsed["image_path"].(string)
+		if imgPath == "" {
+			return
+		}
+		data, err := os.ReadFile(imgPath)
+		if err != nil {
+			a.logger.Warn("failed to read generated image", "path", imgPath, "error", err)
+			return
+		}
+		caption, _ := parsed["revised_prompt"].(string)
+		media := &channels.MediaMessage{
+			Type:     channels.MessageImage,
+			Data:     data,
+			MimeType: "image/png",
+			Filename: filepath.Base(imgPath),
+			Caption:  caption,
+		}
+		if err := a.channelMgr.SendMedia(a.ctx, channel, chatID, media); err != nil {
+			a.logger.Warn("failed to send generated image", "error", err)
+		} else {
+			a.logger.Info("auto-sent generated image to channel", "path", imgPath)
+			// Clean up temp file.
+			os.Remove(imgPath)
+		}
 	}
 }
 

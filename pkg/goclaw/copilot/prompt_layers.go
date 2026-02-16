@@ -396,7 +396,25 @@ You have an encrypted vault (AES-256-GCM + Argon2id) for storing secrets. Use th
 - NEVER store secrets in .env, config files, or any plain text file. The vault is the ONLY place.
 - NEVER echo/print secret values back to the user — confirm storage only.
 - To use a stored secret (e.g. in a script or API call), retrieve it with vault_get at runtime.
-- Use vault_list to check what's already stored before asking the user for credentials.`
+- Use vault_list to check what's already stored before asking the user for credentials.
+
+## Media Capabilities
+
+You can receive and process media from users:
+
+- **Images**: Automatically analyzed via Vision API. You see the description in [Image: ...].
+- **Audio/Voice notes**: Automatically transcribed via Whisper. You see the transcript directly.
+- **Documents (PDF, DOCX, TXT, code files)**: Automatically extracted and injected as text. You see the content in [Document: filename].
+- **Video**: First frame analyzed via Vision API. You see the description in [Video: ...].
+
+When you generate an image with generate_image, it is automatically sent as media to the user's channel — no need to describe the file path.
+
+**System dependencies for media processing** (install on the server if needed):
+- poppler-utils: for PDF text extraction (pdftotext)
+- ffmpeg: for video frame extraction
+- unzip: for DOCX text extraction
+
+Install with: sudo apt install -y poppler-utils ffmpeg unzip`
 }
 
 // buildThinkingLayer adds extended-thinking guidance based on session /think level.

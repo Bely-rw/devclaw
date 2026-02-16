@@ -100,6 +100,10 @@ type AgentRun struct {
 	// intermediate reasoning before tools run.
 	onBeforeToolExec func()
 
+	// onToolResult is called after each tool execution completes.
+	// Used to auto-send media (e.g. generated images) to the channel.
+	onToolResult func(name string, result ToolResult)
+
 	logger *slog.Logger
 }
 
@@ -159,6 +163,12 @@ func (a *AgentRun) SetUsageRecorder(fn func(model string, usage LLMUsage)) {
 // user sees intermediate reasoning before tools run.
 func (a *AgentRun) SetOnBeforeToolExec(fn func()) {
 	a.onBeforeToolExec = fn
+}
+
+// SetOnToolResult sets a callback fired after each tool execution completes.
+// Used to auto-send media (e.g. generated images) to the channel.
+func (a *AgentRun) SetOnToolResult(fn func(name string, result ToolResult)) {
+	a.onToolResult = fn
 }
 
 // SetInterruptChannel sets the channel for receiving follow-up user messages
@@ -441,6 +451,11 @@ func (a *AgentRun) RunWithUsage(ctx context.Context, systemPrompt string, histor
 				Content:    content,
 				ToolCallID: result.ToolCallID,
 			})
+
+			// Notify hook (e.g. auto-send media for generate_image).
+			if a.onToolResult != nil && result.Error == nil {
+				a.onToolResult(result.Name, result)
+			}
 		}
 	}
 }
