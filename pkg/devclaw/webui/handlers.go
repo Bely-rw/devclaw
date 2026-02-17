@@ -410,6 +410,162 @@ func (s *Server) handleAPIChannels(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ── Domain & Network ──
+
+func (s *Server) handleAPIDomain(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.api.GetDomainConfig())
+	case http.MethodPut:
+		var update DomainConfigUpdate
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if err := s.api.UpdateDomainConfig(update); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status":  "ok",
+			"message": "Configuração de domínio atualizada. Reinicie para aplicar alterações de porta.",
+		})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// ── Hooks (Lifecycle) ──
+
+func (s *Server) handleAPIHooks(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		hooks := s.api.ListHooks()
+		if hooks == nil {
+			hooks = []HookInfo{}
+		}
+		events := s.api.GetHookEvents()
+		if events == nil {
+			events = []HookEventInfo{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"hooks":  hooks,
+			"events": events,
+		})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (s *Server) handleAPIHookByName(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/api/hooks/")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nome do hook obrigatório"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPatch:
+		var body struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "corpo inválido"})
+			return
+		}
+		if body.Enabled == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "campo enabled obrigatório"})
+			return
+		}
+		if err := s.api.ToggleHook(name, *body.Enabled); err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	case http.MethodDelete:
+		if err := s.api.UnregisterHook(name); err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// ── Webhooks ──
+
+func (s *Server) handleAPIWebhooks(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		webhooks := s.api.ListWebhooks()
+		if webhooks == nil {
+			webhooks = []WebhookInfo{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"webhooks":     webhooks,
+			"valid_events": s.api.GetValidWebhookEvents(),
+		})
+	case http.MethodPost:
+		var body struct {
+			URL    string   `json:"url"`
+			Events []string `json:"events"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "corpo inválido"})
+			return
+		}
+		if body.URL == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "URL obrigatória"})
+			return
+		}
+		wh, err := s.api.CreateWebhook(body.URL, body.Events)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, wh)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (s *Server) handleAPIWebhookByID(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/webhooks/")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ID do webhook obrigatório"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodDelete:
+		if err := s.api.DeleteWebhook(id); err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	case http.MethodPatch:
+		var body struct {
+			Active *bool `json:"active"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "corpo inválido"})
+			return
+		}
+		if body.Active == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "campo active obrigatório"})
+			return
+		}
+		if err := s.api.ToggleWebhook(id, *body.Active); err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
 // ── Config ──
 
 func (s *Server) handleAPIConfig(w http.ResponseWriter, r *http.Request) {

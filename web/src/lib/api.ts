@@ -156,6 +156,76 @@ export interface SecurityStatus {
   audit_entry_count: number
 }
 
+/* ── Hook Types ── */
+
+export interface HookInfo {
+  name: string
+  description: string
+  source: string
+  events: string[]
+  priority: number
+  enabled: boolean
+}
+
+export interface HookEventInfo {
+  event: string
+  description: string
+  hooks: string[]
+}
+
+export interface HookListResponse {
+  hooks: HookInfo[]
+  events: HookEventInfo[]
+}
+
+/* ── Webhook Types ── */
+
+export interface WebhookInfo {
+  id: string
+  url: string
+  events: string[]
+  active: boolean
+  created_at: string
+}
+
+export interface WebhookListResponse {
+  webhooks: WebhookInfo[]
+  valid_events: string[]
+}
+
+/* ── Domain Types ── */
+
+export interface DomainConfig {
+  webui_address: string
+  webui_auth_configured: boolean
+  gateway_enabled: boolean
+  gateway_address: string
+  gateway_auth_configured: boolean
+  cors_origins: string[]
+  tailscale_enabled: boolean
+  tailscale_serve: boolean
+  tailscale_funnel: boolean
+  tailscale_port: number
+  tailscale_hostname: string
+  tailscale_url: string
+  webui_url: string
+  gateway_url: string
+  public_url: string
+}
+
+export interface DomainConfigUpdate {
+  webui_address?: string
+  webui_auth_token?: string
+  gateway_enabled?: boolean
+  gateway_address?: string
+  gateway_auth_token?: string
+  cors_origins?: string[]
+  tailscale_enabled?: boolean
+  tailscale_serve?: boolean
+  tailscale_funnel?: boolean
+  tailscale_port?: number
+}
+
 /* ── API Methods ── */
 
 export const api = {
@@ -211,6 +281,45 @@ export const api = {
     get: () => request<Record<string, unknown>>('/config'),
     update: (data: Record<string, unknown>) =>
       request<void>('/config', {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+  },
+
+  /* Hooks (lifecycle) */
+  hooks: {
+    list: () => request<HookListResponse>('/hooks'),
+    toggle: (name: string, enabled: boolean) =>
+      request<void>(`/hooks/${name}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      }),
+    unregister: (name: string) =>
+      request<void>(`/hooks/${name}`, { method: 'DELETE' }),
+  },
+
+  /* Webhooks */
+  webhooks: {
+    list: () => request<WebhookListResponse>('/webhooks'),
+    create: (url: string, events: string[]) =>
+      request<WebhookInfo>('/webhooks', {
+        method: 'POST',
+        body: JSON.stringify({ url, events }),
+      }),
+    delete: (id: string) =>
+      request<void>(`/webhooks/${id}`, { method: 'DELETE' }),
+    toggle: (id: string, active: boolean) =>
+      request<void>(`/webhooks/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active }),
+      }),
+  },
+
+  /* Domain & Network */
+  domain: {
+    get: () => request<DomainConfig>('/domain'),
+    update: (data: DomainConfigUpdate) =>
+      request<{ status: string; message: string }>('/domain', {
         method: 'PUT',
         body: JSON.stringify(data),
       }),

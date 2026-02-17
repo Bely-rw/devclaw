@@ -78,6 +78,23 @@ type AssistantAPI interface {
 	UpdateToolGuard(update ToolGuardStatus) error
 	GetVaultStatus() VaultStatus
 	GetSecurityStatus() SecurityStatus
+
+	// Domain & Network
+	GetDomainConfig() DomainConfigInfo
+	UpdateDomainConfig(update DomainConfigUpdate) error
+
+	// Webhooks
+	ListWebhooks() []WebhookInfo
+	CreateWebhook(url string, events []string) (WebhookInfo, error)
+	DeleteWebhook(id string) error
+	ToggleWebhook(id string, active bool) error
+	GetValidWebhookEvents() []string
+
+	// Hooks (lifecycle)
+	ListHooks() []HookInfo
+	ToggleHook(name string, enabled bool) error
+	UnregisterHook(name string) error
+	GetHookEvents() []HookEventInfo
 }
 
 // SessionInfo contains session metadata for the UI.
@@ -131,6 +148,72 @@ type SkillInfo struct {
 	Description string `json:"description"`
 	Enabled     bool   `json:"enabled"`
 	ToolCount   int    `json:"tool_count"`
+}
+
+// HookInfo contains lifecycle hook metadata for the UI.
+type HookInfo struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Source      string   `json:"source"`
+	Events      []string `json:"events"`
+	Priority    int      `json:"priority"`
+	Enabled     bool     `json:"enabled"`
+}
+
+// HookEventInfo describes a supported hook event.
+type HookEventInfo struct {
+	Event       string   `json:"event"`
+	Description string   `json:"description"`
+	Hooks       []string `json:"hooks"` // names of hooks subscribed to this event
+}
+
+// WebhookInfo contains webhook metadata for the UI.
+type WebhookInfo struct {
+	ID        string    `json:"id"`
+	URL       string    `json:"url"`
+	Events    []string  `json:"events"`
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// DomainConfigInfo contains domain/network configuration for the UI.
+type DomainConfigInfo struct {
+	// WebUI settings
+	WebuiAddress   string `json:"webui_address"`
+	WebuiAuthToken bool   `json:"webui_auth_configured"` // never expose the actual token
+
+	// Gateway API settings
+	GatewayEnabled   bool     `json:"gateway_enabled"`
+	GatewayAddress   string   `json:"gateway_address"`
+	GatewayAuthToken bool     `json:"gateway_auth_configured"`
+	CORSOrigins      []string `json:"cors_origins"`
+
+	// Tailscale settings
+	TailscaleEnabled  bool   `json:"tailscale_enabled"`
+	TailscaleServe    bool   `json:"tailscale_serve"`
+	TailscaleFunnel   bool   `json:"tailscale_funnel"`
+	TailscalePort     int    `json:"tailscale_port"`
+	TailscaleHostname string `json:"tailscale_hostname"`
+	TailscaleURL      string `json:"tailscale_url"` // resolved URL if active
+
+	// Computed URLs
+	WebuiURL   string `json:"webui_url"`
+	GatewayURL string `json:"gateway_url"`
+	PublicURL  string `json:"public_url"` // tailscale funnel URL if active
+}
+
+// DomainConfigUpdate contains the mutable domain/network fields from the UI.
+type DomainConfigUpdate struct {
+	WebuiAddress     *string  `json:"webui_address,omitempty"`
+	WebuiAuthToken   *string  `json:"webui_auth_token,omitempty"`
+	GatewayEnabled   *bool    `json:"gateway_enabled,omitempty"`
+	GatewayAddress   *string  `json:"gateway_address,omitempty"`
+	GatewayAuthToken *string  `json:"gateway_auth_token,omitempty"`
+	CORSOrigins      []string `json:"cors_origins,omitempty"`
+	TailscaleEnabled *bool    `json:"tailscale_enabled,omitempty"`
+	TailscaleServe   *bool    `json:"tailscale_serve,omitempty"`
+	TailscaleFunnel  *bool    `json:"tailscale_funnel,omitempty"`
+	TailscalePort    *int     `json:"tailscale_port,omitempty"`
 }
 
 // Config holds web UI configuration.
@@ -214,6 +297,11 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/channels", s.authMiddleware(s.requireAssistant(s.handleAPIChannels)))
 	mux.HandleFunc("/api/channels/whatsapp/", s.authMiddleware(s.requireAssistant(s.handleAPIWhatsAppQR)))
 	mux.HandleFunc("/api/config", s.authMiddleware(s.requireAssistant(s.handleAPIConfig)))
+	mux.HandleFunc("/api/domain", s.authMiddleware(s.requireAssistant(s.handleAPIDomain)))
+	mux.HandleFunc("/api/webhooks", s.authMiddleware(s.requireAssistant(s.handleAPIWebhooks)))
+	mux.HandleFunc("/api/webhooks/", s.authMiddleware(s.requireAssistant(s.handleAPIWebhookByID)))
+	mux.HandleFunc("/api/hooks", s.authMiddleware(s.requireAssistant(s.handleAPIHooks)))
+	mux.HandleFunc("/api/hooks/", s.authMiddleware(s.requireAssistant(s.handleAPIHookByName)))
 	mux.HandleFunc("/api/usage", s.authMiddleware(s.requireAssistant(s.handleAPIUsage)))
 	mux.HandleFunc("/api/jobs", s.authMiddleware(s.requireAssistant(s.handleAPIJobs)))
 	mux.HandleFunc("/api/security/", s.authMiddleware(s.requireAssistant(s.handleAPISecurity)))

@@ -53,6 +53,23 @@ type AssistantAdapter struct {
 
 	// Security: Overview
 	GetSecurityStatusFn func() SecurityStatus
+
+	// Domain & Network
+	GetDomainConfigFn    func() DomainConfigInfo
+	UpdateDomainConfigFn func(update DomainConfigUpdate) error
+
+	// Webhooks
+	ListWebhooksFn          func() []WebhookInfo
+	CreateWebhookFn         func(url string, events []string) (WebhookInfo, error)
+	DeleteWebhookFn         func(id string) error
+	ToggleWebhookFn         func(id string, active bool) error
+	GetValidWebhookEventsFn func() []string
+
+	// Hooks (lifecycle)
+	ListHooksFn      func() []HookInfo
+	ToggleHookFn     func(name string, enabled bool) error
+	UnregisterHookFn func(name string) error
+	GetHookEventsFn  func() []HookEventInfo
 }
 
 func (a *AssistantAdapter) GetConfigMap() map[string]any {
@@ -181,4 +198,87 @@ func (a *AssistantAdapter) GetSecurityStatus() SecurityStatus {
 		return a.GetSecurityStatusFn()
 	}
 	return SecurityStatus{}
+}
+
+// ── Domain & Network ──
+
+func (a *AssistantAdapter) GetDomainConfig() DomainConfigInfo {
+	if a.GetDomainConfigFn != nil {
+		return a.GetDomainConfigFn()
+	}
+	return DomainConfigInfo{}
+}
+
+func (a *AssistantAdapter) UpdateDomainConfig(update DomainConfigUpdate) error {
+	if a.UpdateDomainConfigFn != nil {
+		return a.UpdateDomainConfigFn(update)
+	}
+	return errors.New("not implemented")
+}
+
+// ── Webhooks ──
+
+func (a *AssistantAdapter) ListWebhooks() []WebhookInfo {
+	if a.ListWebhooksFn != nil {
+		return a.ListWebhooksFn()
+	}
+	return nil
+}
+
+func (a *AssistantAdapter) CreateWebhook(url string, events []string) (WebhookInfo, error) {
+	if a.CreateWebhookFn != nil {
+		return a.CreateWebhookFn(url, events)
+	}
+	return WebhookInfo{}, errors.New("not implemented")
+}
+
+func (a *AssistantAdapter) DeleteWebhook(id string) error {
+	if a.DeleteWebhookFn != nil {
+		return a.DeleteWebhookFn(id)
+	}
+	return errors.New("not implemented")
+}
+
+func (a *AssistantAdapter) ToggleWebhook(id string, active bool) error {
+	if a.ToggleWebhookFn != nil {
+		return a.ToggleWebhookFn(id, active)
+	}
+	return errors.New("not implemented")
+}
+
+func (a *AssistantAdapter) GetValidWebhookEvents() []string {
+	if a.GetValidWebhookEventsFn != nil {
+		return a.GetValidWebhookEventsFn()
+	}
+	return nil
+}
+
+// ── Hooks (Lifecycle) ──
+
+func (a *AssistantAdapter) ListHooks() []HookInfo {
+	if a.ListHooksFn != nil {
+		return a.ListHooksFn()
+	}
+	return nil
+}
+
+func (a *AssistantAdapter) ToggleHook(name string, enabled bool) error {
+	if a.ToggleHookFn != nil {
+		return a.ToggleHookFn(name, enabled)
+	}
+	return errors.New("not implemented")
+}
+
+func (a *AssistantAdapter) UnregisterHook(name string) error {
+	if a.UnregisterHookFn != nil {
+		return a.UnregisterHookFn(name)
+	}
+	return errors.New("not implemented")
+}
+
+func (a *AssistantAdapter) GetHookEvents() []HookEventInfo {
+	if a.GetHookEventsFn != nil {
+		return a.GetHookEventsFn()
+	}
+	return nil
 }

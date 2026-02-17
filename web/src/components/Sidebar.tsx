@@ -6,6 +6,9 @@ import {
   Clock,
   Settings,
   Shield,
+  Globe,
+  Webhook,
+  Zap,
   MessageSquare,
   Terminal,
   PanelLeftClose,
@@ -28,8 +31,11 @@ const controlLinks = [
 
 const configLinks = [
   { to: '/config', icon: Settings, label: 'Provider & Config' },
+  { to: '/domain', icon: Globe, label: 'Domínio & Rede' },
+  { to: '/webhooks', icon: Webhook, label: 'Webhooks' },
+  { to: '/hooks', icon: Zap, label: 'Hooks' },
   { to: '/skills', icon: Puzzle, label: 'Skills' },
-  { to: '/security', icon: Shield, label: 'Seguranca & Vault' },
+  { to: '/security', icon: Shield, label: 'Segurança & Vault' },
 ]
 
 export function Sidebar({ sessions: _sessions }: SidebarProps) {

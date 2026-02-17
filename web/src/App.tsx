@@ -8,6 +8,9 @@ import { Sessions } from '@/pages/Sessions'
 import { Skills } from '@/pages/Skills'
 import { Channels } from '@/pages/Channels'
 import { Config } from '@/pages/Config'
+import { Domain } from '@/pages/Domain'
+import { Webhooks } from '@/pages/Webhooks'
+import { Hooks } from '@/pages/Hooks'
 import { Security } from '@/pages/Security'
 import { Jobs } from '@/pages/Jobs'
 import { Login } from '@/pages/Login'
@@ -126,6 +129,9 @@ export function App() {
           <Route path="/channels" element={<Channels />} />
           <Route path="/channels/whatsapp" element={<WhatsAppConnect />} />
           <Route path="/config" element={<Config />} />
+          <Route path="/domain" element={<Domain />} />
+          <Route path="/webhooks" element={<Webhooks />} />
+          <Route path="/hooks" element={<Hooks />} />
           <Route path="/security" element={<Security />} />
           <Route path="/jobs" element={<Jobs />} />
         </Route>
