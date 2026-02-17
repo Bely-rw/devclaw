@@ -428,7 +428,7 @@ func (s *Server) handleAPIDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{
 			"status":  "ok",
-			"message": "Configuração de domínio atualizada. Reinicie para aplicar alterações de porta.",
+			"message": "Domain configuration updated. Restart to apply port changes.",
 		})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -460,7 +460,7 @@ func (s *Server) handleAPIHooks(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIHookByName(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/hooks/")
 	if name == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nome do hook obrigatório"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hook name is required"})
 		return
 	}
 
@@ -470,11 +470,11 @@ func (s *Server) handleAPIHookByName(w http.ResponseWriter, r *http.Request) {
 			Enabled *bool `json:"enabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "corpo inválido"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
 		if body.Enabled == nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "campo enabled obrigatório"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "enabled field is required"})
 			return
 		}
 		if err := s.api.ToggleHook(name, *body.Enabled); err != nil {
@@ -512,11 +512,11 @@ func (s *Server) handleAPIWebhooks(w http.ResponseWriter, r *http.Request) {
 			Events []string `json:"events"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "corpo inválido"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
 		if body.URL == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "URL obrigatória"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "URL is required"})
 			return
 		}
 		wh, err := s.api.CreateWebhook(body.URL, body.Events)
@@ -533,7 +533,7 @@ func (s *Server) handleAPIWebhooks(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAPIWebhookByID(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/webhooks/")
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ID do webhook obrigatório"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "webhook ID is required"})
 		return
 	}
 
@@ -549,11 +549,11 @@ func (s *Server) handleAPIWebhookByID(w http.ResponseWriter, r *http.Request) {
 			Active *bool `json:"active"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "corpo inválido"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
 		if body.Active == nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "campo active obrigatório"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "active field is required"})
 			return
 		}
 		if err := s.api.ToggleWebhook(id, *body.Active); err != nil {

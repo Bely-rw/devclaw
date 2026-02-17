@@ -24,7 +24,7 @@ export function SetupLayout() {
           <h1 className="mt-4 text-2xl font-bold text-white">
             Dev<span className="text-orange-400">Claw</span>
           </h1>
-          <p className="mt-1.5 text-sm text-gray-500">Configure seu agente AI</p>
+          <p className="mt-1.5 text-sm text-gray-500">Configure your AI agent</p>
         </div>
 
         {/* Card */}

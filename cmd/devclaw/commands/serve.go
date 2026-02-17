@@ -337,13 +337,13 @@ func wireWebhookAdapter(adapter *webui.AssistantAdapter, gw *gateway.Gateway) {
 	if gw == nil {
 		adapter.ListWebhooksFn = func() []webui.WebhookInfo { return nil }
 		adapter.CreateWebhookFn = func(string, []string) (webui.WebhookInfo, error) {
-			return webui.WebhookInfo{}, fmt.Errorf("Gateway API não está habilitada")
+			return webui.WebhookInfo{}, fmt.Errorf("Gateway API is not enabled")
 		}
 		adapter.DeleteWebhookFn = func(string) error {
-			return fmt.Errorf("Gateway API não está habilitada")
+			return fmt.Errorf("Gateway API is not enabled")
 		}
 		adapter.ToggleWebhookFn = func(string, bool) error {
-			return fmt.Errorf("Gateway API não está habilitada")
+			return fmt.Errorf("Gateway API is not enabled")
 		}
 		adapter.GetValidWebhookEventsFn = func() []string { return gateway.ValidWebhookEvents }
 		return
@@ -375,13 +375,13 @@ func wireWebhookAdapter(adapter *webui.AssistantAdapter, gw *gateway.Gateway) {
 	}
 	adapter.DeleteWebhookFn = func(id string) error {
 		if !gw.DeleteWebhook(id) {
-			return fmt.Errorf("webhook %q não encontrado", id)
+			return fmt.Errorf("webhook %q not found", id)
 		}
 		return nil
 	}
 	adapter.ToggleWebhookFn = func(id string, active bool) error {
 		if !gw.ToggleWebhook(id, active) {
-			return fmt.Errorf("webhook %q não encontrado", id)
+			return fmt.Errorf("webhook %q not found", id)
 		}
 		return nil
 	}
@@ -586,7 +586,7 @@ func buildWebUIAdapter(assistant *copilot.Assistant, cfg *copilot.Config, wa *wh
 						select {
 						case events <- webui.StreamEvent{
 							Type: "error",
-							Data: map[string]string{"message": "Execução cancelada"},
+							Data: map[string]string{"message": "Execution cancelled"},
 						}:
 						default:
 						}
@@ -789,20 +789,20 @@ func buildWebUIAdapter(assistant *copilot.Assistant, cfg *copilot.Config, wa *wh
 	adapter.ToggleHookFn = func(name string, enabled bool) error {
 		hm := assistant.HookManager()
 		if hm == nil {
-			return fmt.Errorf("hook manager não disponível")
+			return fmt.Errorf("hook manager not available")
 		}
 		if !hm.SetEnabled(name, enabled) {
-			return fmt.Errorf("hook %q não encontrado", name)
+			return fmt.Errorf("hook %q not found", name)
 		}
 		return nil
 	}
 	adapter.UnregisterHookFn = func(name string) error {
 		hm := assistant.HookManager()
 		if hm == nil {
-			return fmt.Errorf("hook manager não disponível")
+			return fmt.Errorf("hook manager not available")
 		}
 		if !hm.Unregister(name) {
-			return fmt.Errorf("hook %q não encontrado", name)
+			return fmt.Errorf("hook %q not found", name)
 		}
 		return nil
 	}

@@ -202,7 +202,7 @@ func (s *Server) handleSetupFinalize(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
-		"message": "Configuração salva. Reinicie o servidor para aplicar.",
+		"message": "Configuration saved. Restarting server to apply changes.",
 	})
 }
 
@@ -210,7 +210,7 @@ func (s *Server) handleSetupFinalize(w http.ResponseWriter, r *http.Request) {
 // First tries from embedded defaults, then downloads from devclaw-skills on GitHub.
 func (s *Server) installSetupSkills(selected []string) {
 	const skillsDir = "./skills"
-	const ghRaw = "https://raw.githubusercontent.com/jholhewres/devclaw-skills/main"
+	const ghRaw = "https://raw.githubusercontent.com/jholhewres/devclaw-skills/master"
 
 	// Go-native builtins that don't need SKILL.md files (they have Go implementations).
 	goNative := map[string]bool{
@@ -344,7 +344,7 @@ type skillsCatalogFile struct {
 
 // fetchSkillsCatalogFromGitHub fetches and parses the devclaw-skills index.yaml from GitHub.
 func fetchSkillsCatalogFromGitHub(logger interface{ Debug(string, ...any) }) []map[string]any {
-	const catalogURL = "https://raw.githubusercontent.com/jholhewres/devclaw-skills/main/index.yaml"
+	const catalogURL = "https://raw.githubusercontent.com/jholhewres/devclaw-skills/master/index.yaml"
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(catalogURL)
@@ -449,7 +449,7 @@ func testProviderConnection(baseURL, apiKey, model string) error {
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("conexão falhou: %w", err)
+		return fmt.Errorf("connection failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -461,11 +461,11 @@ func testProviderConnection(baseURL, apiKey, model string) error {
 
 	switch resp.StatusCode {
 	case 401:
-		return fmt.Errorf("API key inválida")
+		return fmt.Errorf("invalid API key")
 	case 403:
-		return fmt.Errorf("acesso negado — verifique as permissões da key")
+		return fmt.Errorf("access denied — check your API key permissions")
 	case 404:
-		return fmt.Errorf("modelo '%s' não encontrado", model)
+		return fmt.Errorf("model '%s' not found", model)
 	case 429:
 		return fmt.Errorf("rate limit excedido — tente novamente em alguns segundos")
 	default:
