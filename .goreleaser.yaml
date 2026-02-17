@@ -1,0 +1,87 @@
+version: 2
+
+before:
+  hooks:
+    - cmd: bash -c "cd web && npm ci && npm run build && rm -rf ../pkg/devclaw/webui/dist && cp -r dist ../pkg/devclaw/webui/dist"
+      env:
+        - NODE_ENV=production
+
+builds:
+  - id: devclaw
+    main: ./cmd/devclaw
+    binary: devclaw
+    env:
+      - CGO_ENABLED=1
+    tags:
+      - sqlite_fts5
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+  - id: devclaw-windows
+    main: ./cmd/devclaw
+    binary: devclaw
+    env:
+      - CGO_ENABLED=1
+      - CC=x86_64-w64-mingw32-gcc
+    tags:
+      - sqlite_fts5
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - windows
+    goarch:
+      - amd64
+
+archives:
+  - id: unix
+    builds:
+      - devclaw
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+  - id: windows
+    builds:
+      - devclaw-windows
+    format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: jholhewres
+    name: devclaw
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+
+dockers:
+  - image_templates:
+      - "ghcr.io/jholhewres/devclaw:{{ .Version }}"
+      - "ghcr.io/jholhewres/devclaw:latest"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--pull"
+      - "--label=org.opencontainers.image.title=devclaw"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source=https://github.com/jholhewres/devclaw"
