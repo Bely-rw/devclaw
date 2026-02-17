@@ -2,9 +2,7 @@ version: 2
 
 before:
   hooks:
-    - cmd: bash -c "cd web && npm ci && npm run build && rm -rf ../pkg/devclaw/webui/dist && cp -r dist ../pkg/devclaw/webui/dist"
-      env:
-        - NODE_ENV=production
+    - bash -c "export NODE_ENV=production && cd web && npm ci && npm run build && rm -rf ../pkg/devclaw/webui/dist && cp -r dist ../pkg/devclaw/webui/dist"
 
 builds:
   - id: devclaw

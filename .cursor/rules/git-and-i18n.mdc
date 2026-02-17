@@ -1,0 +1,50 @@
+---
+description: Git commit conventions and internationalization guidelines
+globs: []
+alwaysApply: true
+---
+
+# Git & Internationalization — DevClaw
+
+## Git Commits
+
+- All commit messages MUST be in **English**
+- Follow Conventional Commits format: `type(scope): description`
+- Types: `feat`, `fix`, `refactor`, `perf`, `docs`, `chore`, `ci`, `test`, `build`
+- Scope is optional but recommended: `feat(skills):`, `fix(ui):`, `refactor(agent):`
+- Description: imperative mood, lowercase, no period at end
+- Body (optional): explain "why", not "what"
+
+### Examples
+
+```
+feat(skills): add starter pack with 6 core dev skills
+fix(ui): correct toggle alignment on domain page
+refactor(agent): extract media enrichment into helper
+chore: remove legacy submodule artifacts
+```
+
+## Internationalization (i18n)
+
+DevClaw supports three languages:
+
+| Language | Code | Status | Usage |
+|----------|------|--------|-------|
+| English | `en` | Default | Code, commits, logs, API responses, CLI output |
+| Portuguese (BR) | `pt-BR` | Optional | WebUI labels, setup wizard, user-facing messages |
+| Spanish | `es` | Optional | WebUI labels, setup wizard, user-facing messages |
+
+### Rules
+
+- **Code**: all identifiers, comments, and logs in English
+- **Commits**: always in English
+- **WebUI strings**: support all 3 languages via i18n system
+- **SKILL.md files**: English (primary), translated versions optional
+- **Error messages (API)**: English
+- **User-facing UI text**: translatable (default: English)
+
+### When adding UI text
+
+- Use translation keys instead of hardcoded strings when i18n is available
+- If i18n is not yet implemented, use English as default with Portuguese as fallback for existing pages
+- Keep strings concise — shorter text translates better

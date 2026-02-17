@@ -20,7 +20,7 @@ Open-source AI agent for tech teams — devs, DevOps, QA, PMs, designers, and ev
 **One-liner (macOS/Linux):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jholhewres/devclaw/main/scripts/install/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jholhewres/devclaw/master/scripts/install/install.sh | bash
 ```
 
 **Go install:**
@@ -36,19 +36,19 @@ devclaw serve
 ```bash
 git clone https://github.com/jholhewres/devclaw.git && cd devclaw
 make build
-./bin/devclaw serve    # setup wizard starts at http://localhost:8090/setup
+./bin/devclaw serve      # setup wizard at http://localhost:8090/setup
 ```
 
 **Docker:**
 
 ```bash
-docker run -d -p 8090:8090 -p 8080:8080 ghcr.io/jholhewres/devclaw serve
+docker run -d -p 8090:8090 -p 8085:8085 ghcr.io/jholhewres/devclaw serve
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/jholhewres/devclaw/main/scripts/install/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/jholhewres/devclaw/master/scripts/install/install.ps1 | iex
 ```
 
 ---
