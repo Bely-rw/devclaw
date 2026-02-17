@@ -1,4 +1,4 @@
-import { MessageSquare, Check } from 'lucide-react'
+import { MessageSquare, Check, Phone } from 'lucide-react'
 import type { SetupData } from './SetupWizard'
 
 interface Props {
@@ -137,6 +137,26 @@ export function StepChannels({ data, updateData }: Props) {
           )
         })}
       </div>
+
+      {/* Owner phone — só aparece quando WhatsApp está ativado */}
+      {data.channels['whatsapp'] && (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 space-y-3">
+          <label className="flex items-center gap-2 text-sm font-medium text-zinc-300">
+            <Phone className="h-3.5 w-3.5 text-emerald-400" />
+            Número do dono (WhatsApp)
+          </label>
+          <input
+            type="tel"
+            value={data.ownerPhone}
+            onChange={(e) => updateData({ ownerPhone: e.target.value.replace(/\D/g, '') })}
+            placeholder="5511999999999"
+            className="flex h-11 w-full rounded-xl border border-zinc-700/50 bg-zinc-800/50 px-4 text-sm text-white placeholder:text-zinc-600 outline-none transition-all focus:border-emerald-500/50 focus:ring-2 focus:ring-emerald-500/10"
+          />
+          <p className="text-xs text-zinc-500">
+            Código do país + DDD + número, sem espaços. Este número terá acesso total (owner).
+          </p>
+        </div>
+      )}
 
       <div className="flex items-center gap-2.5 rounded-xl bg-zinc-800/40 px-4 py-3 ring-1 ring-zinc-700/30">
         <MessageSquare className="h-4 w-4 shrink-0 text-orange-400" />
