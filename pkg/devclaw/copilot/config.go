@@ -79,6 +79,9 @@ type Config struct {
 	// Fallback configures model fallback with retry and backoff.
 	Fallback FallbackConfig `yaml:"fallback"`
 
+	// Budget configures monthly cost tracking and limits.
+	Budget BudgetConfig `yaml:"budget"`
+
 	// Media configures vision and audio transcription.
 	Media MediaConfig `yaml:"media"`
 
@@ -215,7 +218,12 @@ func (m MediaConfig) Effective() MediaConfig {
 // FallbackConfig configures model fallback and retry behavior.
 type FallbackConfig struct {
 	// Models is the ordered list of fallback models to try on failure.
+	// Supports N providers: primary -> fallback1 -> fallback2 -> ... -> local.
 	Models []string `yaml:"models"`
+
+	// Chain defines provider-specific fallback with separate base_url/api_key.
+	// Each entry is a complete provider config tried in order on failure.
+	Chain []ProviderChainEntry `yaml:"chain"`
 
 	// MaxRetries per model before moving to next (default: 2).
 	MaxRetries int `yaml:"max_retries"`
@@ -228,6 +236,35 @@ type FallbackConfig struct {
 
 	// RetryOnStatusCodes lists HTTP codes that trigger retry (default: [429, 500, 502, 503, 529]).
 	RetryOnStatusCodes []int `yaml:"retry_on_status_codes"`
+}
+
+// ProviderChainEntry defines a single provider in the fallback chain.
+type ProviderChainEntry struct {
+	Provider string `yaml:"provider"`           // Provider name (openai, anthropic, ollama, etc.)
+	BaseURL  string `yaml:"base_url"`           // API endpoint
+	APIKey   string `yaml:"api_key,omitempty"`  // API key (can use ${VAR} references)
+	Model    string `yaml:"model"`              // Model to use from this provider
+}
+
+// BudgetConfig configures monthly cost tracking and limits.
+type BudgetConfig struct {
+	// MonthlyLimitUSD is the maximum monthly spend (0 = unlimited).
+	MonthlyLimitUSD float64 `yaml:"monthly_limit_usd"`
+
+	// WarnAtPercent triggers a warning when this % of budget is reached (default: 80).
+	WarnAtPercent int `yaml:"warn_at_percent"`
+
+	// ActionAtLimit defines behavior when limit is reached: "warn", "block", "fallback_local".
+	ActionAtLimit string `yaml:"action_at_limit"`
+}
+
+// DefaultBudgetConfig returns sensible defaults for budget tracking.
+func DefaultBudgetConfig() BudgetConfig {
+	return BudgetConfig{
+		MonthlyLimitUSD: 0,
+		WarnAtPercent:   80,
+		ActionAtLimit:   "warn",
+	}
 }
 
 // DefaultFallbackConfig returns sensible defaults for model fallback.
@@ -514,6 +551,7 @@ func DefaultConfig() *Config {
 		Subagents:  DefaultSubagentConfig(),
 		Agent:      DefaultAgentConfig(),
 		Fallback:   DefaultFallbackConfig(),
+		Budget:     DefaultBudgetConfig(),
 		Media:      DefaultMediaConfig(),
 		Logging: LoggingConfig{
 			Level:  "info",
