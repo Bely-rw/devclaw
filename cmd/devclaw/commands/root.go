@@ -33,6 +33,12 @@ Examples:
 		newHealthCmd(),
 		newChangelogCmd(version),
 		newCompletionCmd(),
+		newFixCmd(),
+		newExplainCmd(),
+		newDiffCmd(),
+		newCommitCmd(),
+		newHowCmd(),
+		newShellHookCmd(),
 	)
 
 	// Flags globais.

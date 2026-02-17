@@ -70,7 +70,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	vault := copilot.ResolveAPIKey(cfg, logger)
 
 	if cfg.API.APIKey == "" || copilot.IsEnvReference(cfg.API.APIKey) {
-		return fmt.Errorf("no API key configured. Run: copilot config vault-set")
+		return fmt.Errorf("no API key configured. Run: devclaw config vault-set")
 	}
 
 	// ── Create and start assistant ──
@@ -86,6 +86,28 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start assistant: %w", err)
 	}
 	defer assistant.Stop()
+
+	// ── Pipe mode: read stdin as context ──
+	stdinInfo, _ := os.Stdin.Stat()
+	isPipe := (stdinInfo.Mode() & os.ModeCharDevice) == 0
+
+	if isPipe {
+		stdinData, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("reading stdin: %w", err)
+		}
+		stdinContent := strings.TrimSpace(string(stdinData))
+		if stdinContent != "" {
+			message := "Analyze this input"
+			if len(args) > 0 {
+				message = args[0]
+			}
+			prompt := fmt.Sprintf("%s\n\n```\n%s\n```", message, stdinContent)
+			response := executeChat(assistant, prompt)
+			fmt.Println(response)
+			return nil
+		}
+	}
 
 	// ── Single message mode ──
 	if len(args) > 0 {
