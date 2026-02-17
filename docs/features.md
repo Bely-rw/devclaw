@@ -70,7 +70,7 @@ Three strategies to keep the context within limits:
 
 ## Tool System
 
-### Built-in Tools (45+)
+### Built-in Tools (70+)
 
 #### Filesystem
 
@@ -172,6 +172,162 @@ Three strategies to keep the context within limits:
 | `install_skill` | Install from ClawHub, GitHub, URL, or local path | admin |
 | `search_skills` | Search the ClawHub catalog | user |
 | `remove_skill` | Uninstall a skill | admin |
+
+#### Git (Native)
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `git_status` | Working tree status with file lists (staged, modified, untracked) | user |
+| `git_diff` | View diffs (staged, unstaged, between refs) | user |
+| `git_log` | Commit log with author, date, message | user |
+| `git_commit` | Create commits (supports --all, --amend) | owner |
+| `git_branch` | Create, delete, list, switch branches | owner |
+| `git_stash` | Stash/pop/list/drop operations | owner |
+| `git_blame` | Line-by-line attribution for files | user |
+
+#### Docker (Native)
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `docker_ps` | List containers (running/all) | user |
+| `docker_logs` | View container logs (tail, follow) | user |
+| `docker_exec` | Execute commands inside containers | admin |
+| `docker_images` | List local images | user |
+| `docker_compose` | Docker Compose operations (up, down, ps, logs) | admin |
+| `docker_stop` | Stop running containers | admin |
+| `docker_rm` | Remove containers | admin |
+
+#### Database
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `db_query` | Execute SELECT queries (PostgreSQL, MySQL, SQLite) | admin |
+| `db_execute` | Execute mutating queries (INSERT, UPDATE, DELETE) | owner |
+| `db_schema` | Inspect table schemas and column types | admin |
+| `db_connections` | List active database connections | admin |
+
+#### Developer Utilities
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `json_format` | Pretty-print or compact JSON | user |
+| `jwt_decode` | Decode JWT tokens (header + payload) | user |
+| `regex_test` | Test regex patterns against strings | user |
+| `base64_encode` | Encode string to Base64 | user |
+| `base64_decode` | Decode Base64 to string | user |
+| `hash` | Generate MD5, SHA-1, or SHA-256 hashes | user |
+| `uuid_generate` | Generate v4 UUIDs | user |
+| `url_parse` | Parse URL into components | user |
+| `timestamp_convert` | Convert between Unix timestamps and human-readable dates | user |
+
+#### System & Environment
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `env_info` | OS, arch, Go version, hostname, memory, disk | user |
+| `port_scan` | Check which ports are listening | user |
+| `process_list` | List running processes with resource usage | user |
+
+#### Codebase Analysis
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `codebase_index` | Build directory tree (respects .gitignore) | user |
+| `code_search` | Regex search with ripgrep (grep fallback) | user |
+| `code_symbols` | Extract functions, types, and classes from files | user |
+| `cursor_rules_generate` | Generate IDE rules based on project structure | admin |
+
+#### Testing
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `test_run` | Auto-detect framework and run tests (Go, Node, Python, Rust, etc.) | admin |
+| `api_test` | HTTP endpoint validation (method, headers, body, assertions) | admin |
+| `test_coverage` | Run tests with coverage reporting | admin |
+
+#### Operations
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `server_health` | Check server health (HTTP, TCP, DNS) | user |
+| `deploy_run` | Execute deploy pipeline with pre/post checks and dry-run | owner |
+| `tunnel_manage` | Manage SSH tunnels (create, list, stop) | admin |
+| `ssh_exec` | Execute commands on remote servers via SSH | admin |
+
+#### Product Management
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `sprint_report` | Generate sprint report from git history | user |
+| `dora_metrics` | Calculate DORA metrics (deploy freq, lead time, failure rate) | user |
+| `project_summary` | Generate project overview from code and git data | user |
+
+#### Daemon Management
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `start_daemon` | Start a background process (dev server, watcher, etc.) | admin |
+| `daemon_logs` | View daemon output (ring buffer, last N lines) | user |
+| `daemon_list` | List running daemons with health status | user |
+| `daemon_stop` | Stop a running daemon | admin |
+| `daemon_restart` | Restart a daemon | admin |
+
+#### Plugins
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `plugin_list` | List available and active plugins | user |
+| `plugin_install` | Install a plugin (GitHub, Jira, Sentry) | admin |
+| `plugin_call` | Call a specific plugin tool | admin |
+
+#### Team & Multi-user
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `team_users` | Manage team users and roles (owner, admin, editor, viewer) | admin |
+| `shared_memory` | Read/write team-wide shared memory entries | user |
+
+#### IDE Configuration
+
+| Tool | Description | Permission |
+|------|-------------|------------|
+| `ide_configure` | Generate IDE configuration for MCP integration | user |
+
+---
+
+## MCP Server (IDE Integration)
+
+DevClaw implements a [Model Context Protocol](https://modelcontextprotocol.io/) server:
+
+- **Transports**: stdio (for IDEs) and SSE (for web clients)
+- **Protocol**: JSON-RPC 2.0
+- **Methods**: `initialize`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`, `ping`
+- **CLI**: `devclaw mcp serve`
+
+Any MCP-compatible IDE can use DevClaw as a tool backend.
+
+---
+
+## Daemon Manager
+
+Background process lifecycle management for development workflows:
+
+- **Start/stop/restart** dev servers, watchers, databases, build tools
+- **Ring buffer**: last 1000 lines of output per daemon
+- **Health monitoring**: periodic checks with configurable intervals
+- **Auto-restart**: restart on failure with backoff
+- Exposed as tools: `start_daemon`, `daemon_logs`, `daemon_list`, `daemon_stop`, `daemon_restart`
+
+---
+
+## Plugin System
+
+Extensible plugin architecture:
+
+- **Built-in plugins**: GitHub (API), Jira (API), Sentry (API)
+- **Plugin Manager**: YAML-based plugin definitions, load/enable/disable lifecycle
+- **Webhook Dispatcher**: route events (tool_use, error, deploy) to external endpoints
+- **Custom plugins**: define tools, config, and webhook subscriptions in YAML
 
 ---
 
@@ -465,12 +621,30 @@ Per-session and global tracking of consumed tokens. Accessible via `/usage` comm
 | `devclaw setup` | Interactive wizard (TUI) |
 | `devclaw serve` | Start daemon |
 | `devclaw chat [msg]` | Interactive REPL or single message |
+| `devclaw mcp serve` | Start MCP server over stdio (for IDE integration) |
+| `devclaw fix [file]` | Analyze and fix errors (supports pipe: `npm build 2>&1 \| devclaw fix`) |
+| `devclaw explain [path]` | Explain code, files, or entire directories |
+| `devclaw diff [--staged]` | AI review of git changes |
+| `devclaw commit [--dry-run]` | Generate conventional commit message and commit |
+| `devclaw how "task"` | Generate shell commands without executing |
+| `devclaw shell-hook bash\|zsh\|fish` | Generate shell hook for auto error capture |
 | `devclaw config init/show/validate` | Config management |
 | `devclaw config vault-*` | Vault management |
 | `devclaw skill list/search/install` | Skills management |
 | `devclaw schedule list/add` | Cron management |
 | `devclaw health` | Health check |
 | `devclaw changelog` | Version changelog |
+
+### Pipe Mode
+
+The `chat` command reads from stdin when piped, enabling powerful integrations:
+
+```bash
+git diff | devclaw "review this"
+npm run build 2>&1 | devclaw fix
+cat README.md | devclaw "translate to portuguese"
+kubectl logs pod-name | devclaw "find the error"
+```
 
 ### Chat Commands (via messaging or CLI REPL)
 

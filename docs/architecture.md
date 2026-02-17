@@ -4,7 +4,7 @@ Technical documentation of DevClaw's internal architecture, covering components,
 
 ## Overview
 
-DevClaw is an AI assistant framework written in Go. Single binary, zero runtime dependencies. Supports interactive CLI, WebUI, and messaging channels (WhatsApp, with Discord/Telegram planned).
+DevClaw is an AI agent for tech teams, written in Go. Single binary, zero runtime dependencies. Supports interactive CLI, WebUI, MCP server (for IDE integration), and messaging channels (WhatsApp, Discord, Telegram, Slack).
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -46,15 +46,21 @@ DevClaw is an AI assistant framework written in Go. Single binary, zero runtime 
 │  │ Canvas   │  │  Group   │  │ Failover  │              │
 │  │  Host    │  │  Chat    │  │  Manager  │              │
 │  └──────────┘  └──────────┘  └───────────┘              │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌───────────┐              │
+│  │ Daemon   │  │ Plugin   │  │   User    │              │
+│  │ Manager  │  │ Manager  │  │  Manager  │              │
+│  └──────────┘  └──────────┘  └───────────┘              │
 └──────────────────────────────────────────────────────────┘
-         │                          │
-┌────────▼──────────┐    ┌─────────▼──────────┐
-│  pkg/devclaw/      │    │  pkg/devclaw/       │
-│  channels/        │    │  gateway/           │
-│  ├─ whatsapp/     │    │  (HTTP API,         │
-│  ├─ discord/      │    │   WebSocket,        │
-│  └─ telegram/     │    │   OpenAI-compat)    │
-└───────────────────┘    └────────────────────┘
+         │                          │                │
+┌────────▼──────────┐    ┌─────────▼──────────┐  ┌▼────────────┐
+│  pkg/devclaw/      │    │  pkg/devclaw/       │  │ pkg/devclaw/ │
+│  channels/        │    │  gateway/           │  │ mcp/        │
+│  ├─ whatsapp/     │    │  (HTTP API,         │  │ (MCP Server,│
+│  ├─ discord/      │    │   WebSocket,        │  │  stdio+SSE) │
+│  ├─ telegram/     │    │   OpenAI-compat)    │  └─────────────┘
+│  └─ slack/        │    └────────────────────┘
+└───────────────────┘
          │                          │
 ┌────────▼──────────┐    ┌─────────▼──────────┐
 │  pkg/devclaw/      │    │  pkg/devclaw/       │
@@ -264,7 +270,9 @@ Automatic LLM failover:
 Abstract interface that each channel implements:
 
 - **WhatsApp** (`channels/whatsapp/`): native Go implementation via whatsmeow. Supports text, images, audio, video, documents, stickers, locations, contacts, reactions, typing indicators, read receipts.
-- **Discord** and **Telegram**: planned.
+- **Discord** (`channels/discord/`): via discordgo. Text, embeds, reactions.
+- **Telegram** (`channels/telegram/`): via telebot. Text, images, audio, documents.
+- **Slack** (`channels/slack/`): via slack-go. Text, threads, reactions.
 
 ### HTTP Gateway (`gateway/`)
 
@@ -317,7 +325,7 @@ React-based single page application with SSE streaming, session management, and 
 
 | Component | Technology |
 |-----------|-----------|
-| Language | Go 1.22+ |
+| Language | Go 1.24+ |
 | CLI | Cobra + readline |
 | Setup | charmbracelet/huh (TUI forms) |
 | WhatsApp | whatsmeow (native Go) |
@@ -330,3 +338,55 @@ React-based single page application with SSE streaming, session management, and 
 | Sandbox | Linux namespaces (syscall) / Docker CLI |
 | WebSocket | gorilla/websocket |
 | Frontend | React + Vite + TypeScript |
+
+## New Components (v2.x+)
+
+### 14. MCP Server (`mcp/`)
+
+Model Context Protocol server enabling IDE integration:
+
+- **Transports**: stdio (standard) and SSE (HTTP-based)
+- **JSON-RPC 2.0**: handles `initialize`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`, `ping`
+- **IDE Support**: Cursor, VSCode, Claude Code, Windsurf, Zed, Neovim — any MCP-compatible client
+- **CLI**: `devclaw mcp serve` starts the stdio transport
+
+### 15. Daemon Manager (`daemon_manager.go`)
+
+Background process lifecycle management:
+
+- **Start/stop/restart**: dev servers, watchers, databases, build tools
+- **Ring buffer output**: last 1000 lines per daemon, tail-friendly
+- **Health monitoring**: periodic health checks with auto-restart on failure
+- **Tools**: `start_daemon`, `daemon_logs`, `daemon_list`, `daemon_stop`, `daemon_restart`
+
+### 16. Plugin System (`plugin_system.go`)
+
+Plugin architecture with built-in integrations:
+
+- **Built-in plugins**: GitHub (issues, PRs, CI/CD), Jira (issues, boards), Sentry (events, error tracking)
+- **Plugin Manager**: load, enable/disable, call plugin tools
+- **Webhook Dispatcher**: event routing to configured endpoints
+- **Tools**: `plugin_list`, `plugin_install`, `plugin_call`
+
+### 17. User Manager (`multiuser.go`)
+
+Multi-user support with RBAC:
+
+- **Roles**: owner, admin, editor, viewer
+- **Shared Memory**: team-wide persistent context
+- **Tools**: `team_users`, `shared_memory`
+
+### 18. Extended Tool Categories
+
+| Category | File | Tools |
+|----------|------|-------|
+| Git | `git_tools.go` | status, diff, log, commit, branch, stash, blame |
+| Docker | `docker_tools.go` | ps, logs, exec, images, compose, stop, rm |
+| Database | `db_tools.go` | query, execute, schema, connections |
+| Dev Utilities | `dev_utils.go` | json_format, jwt_decode, regex_test, base64, hash, uuid, url_parse, timestamp |
+| System/Env | `env_tools.go` | env_info, port_scan, process_list |
+| Codebase | `codebase_tools.go` | codebase_index, code_search, code_symbols, cursor_rules_generate |
+| Testing | `testing_tools.go` | test_run, api_test, test_coverage |
+| Operations | `ops_tools.go` | server_health, deploy_run, tunnel_manage, ssh_exec |
+| Product | `product_tools.go` | sprint_report, dora_metrics, project_summary |
+| IDE | `ide_extensions.go` | ide_configure |

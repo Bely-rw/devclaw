@@ -7,7 +7,9 @@
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8?style=for-the-badge&logo=go)](https://go.dev)
 [![CI](https://img.shields.io/github/actions/workflow/status/jholhewres/devclaw/release.yml?style=for-the-badge)](https://github.com/jholhewres/devclaw/actions)
 
-Open-source AI agent for tech teams — devs, DevOps, QA, PMs, designers, and everyone in between. Single Go binary with CLI, WebUI, and messaging channels. Full system access, persistent memory, encrypted vault, and 40+ built-in tools.
+Open-source AI agent for tech teams — devs, DevOps, QA, PMs, designers, and everyone in between. Single Go binary with CLI, WebUI, MCP server, and messaging channels. Full system access, persistent memory, encrypted vault, and 70+ built-in tools.
+
+**Not a chatbot. Not an IDE. Not a framework.** DevClaw is the AI backend that IDEs, terminals, and channels access — giving any tool persistent memory, infrastructure access, and integrations.
 
 [**Docs**](docs/) | [**Getting Started**](#quick-start) | [**Skills**](https://github.com/jholhewres/devclaw-skills) | [**Releases**](https://github.com/jholhewres/devclaw/releases)
 
@@ -55,37 +57,152 @@ iwr -useb https://raw.githubusercontent.com/jholhewres/devclaw/main/scripts/inst
 
 - **Single binary** — one `go build`, zero runtime dependencies
 - **9 LLM providers** — OpenAI, Anthropic, Ollama, Groq, Google AI, Z.AI, xAI, OpenRouter, and any OpenAI-compatible endpoint
-- **Automatic fallback** — rate-limited model → fallback → local Ollama, with cooldown probing
-- **40+ built-in tools** — file I/O, bash, SSH, web search, browser automation, memory, scheduler, vault
+- **N-provider fallback chain** — rate-limited model → fallback → local Ollama, with per-model cooldowns and budget tracking
+- **70+ built-in tools** — Git, Docker, databases, testing, deploy, DORA metrics, and much more
+- **MCP server** — any IDE (Cursor, VSCode, Claude Code, Windsurf) connects via Model Context Protocol
+- **Pipe mode** — `git diff | devclaw diff` or `npm build 2>&1 | devclaw fix`
+- **Quick commands** — `devclaw fix`, `devclaw explain .`, `devclaw commit`, `devclaw how "task"`
 - **Extensible skills** — install from [devclaw-skills](https://github.com/jholhewres/devclaw-skills) or create your own
 - **4 channels** — WhatsApp, Discord, Telegram, Slack
 - **WebUI** — React dashboard with SSE streaming, session management, and setup wizard
 - **Gateway API** — OpenAI-compatible HTTP API + WebSocket JSON-RPC
 - **Encrypted vault** — AES-256-GCM + Argon2id for all secrets
 - **Persistent memory** — SQLite FTS5 + vector embeddings for long-term context
-- **Sandboxed execution** — skill scripts run in isolated sandbox
-- **Tool guard** — ACL-based access control with audit logging
+- **Daemon manager** — start, monitor, and control background processes (dev servers, watchers)
+- **Plugin system** — GitHub, Jira, Sentry integrations with webhook support
+- **Shell hook** — auto-capture failed commands and suggest `devclaw fix`
 
 ---
 
 ## How It Works
 
 ```
-                    ┌─────────────┐
-                    │   Channels  │  WhatsApp, Discord, Telegram, Slack
-                    └──────┬──────┘
-                           │
-┌──────┐  ┌────────┐  ┌───▼───────────┐  ┌──────────┐
-│  CLI │──│ WebUI  │──│   Assistant   │──│ Sessions │
-└──────┘  └────────┘  │  (agent loop) │  │ (SQLite) │
-                      └───┬───────────┘  └──────────┘
-                          │
-              ┌───────────┼───────────┐
-              │           │           │
-         ┌────▼────┐ ┌───▼───┐ ┌────▼────┐
-         │  Tools  │ │  LLM  │ │ Memory  │
-         │  (40+)  │ │Client │ │ (FTS5)  │
-         └─────────┘ └───────┘ └─────────┘
+┌──────────────────────────────────────────────────────┐
+│                    Interfaces                        │
+│  CLI   WebUI   WhatsApp   Discord   Telegram   Slack │
+└──────────────────────┬───────────────────────────────┘
+                       │
+        ┌──────────────▼──────────────┐
+        │         Assistant           │
+        │       (agent loop)          │
+        └──┬──────────┬──────────┬────┘
+           │          │          │
+    ┌──────▼──┐  ┌────▼────┐  ┌─▼────────┐
+    │  Tools  │  │   LLM   │  │  Memory  │
+    │  (70+)  │  │  Client │  │ (SQLite) │
+    └─────────┘  └─────────┘  └──────────┘
+           │
+    ┌──────▼────────────────────────────────┐
+    │            MCP Server                 │
+    │  (stdio + SSE — for IDE integration)  │
+    └───────────────────────────────────────┘
+           │
+    ┌──────▼──────────────────────────────┐
+    │  Cursor  VSCode  Claude Code  Aider │
+    │  OpenCode  Windsurf  Zed  Neovim   │
+    └─────────────────────────────────────┘
+```
+
+---
+
+## Tools
+
+70+ built-in tools across 20 categories:
+
+| Category | Tools |
+|----------|-------|
+| **Files** | read, write, edit, list, search, glob |
+| **Shell** | bash, environment variables |
+| **Git** | status, diff, log, commit, branch, stash, blame (structured JSON) |
+| **Docker** | ps, logs, exec, images, compose (up/down/ps/logs), stop, rm |
+| **Database** | query, execute, schema, connections (PostgreSQL, MySQL, SQLite) |
+| **Dev Utils** | json_format, jwt_decode, regex_test, base64, hash, uuid, url_parse, timestamp |
+| **System** | env_info, port_scan, process_list |
+| **Codebase** | index (file tree), code_search (ripgrep), symbols, cursor_rules_generate |
+| **Testing** | test_run (auto-detect framework), api_test, test_coverage |
+| **Ops** | server_health (HTTP/TCP/DNS), deploy_run, tunnel_manage, ssh_exec |
+| **Product** | sprint_report, dora_metrics, project_summary |
+| **Daemons** | start_daemon, daemon_logs, daemon_list, daemon_stop, daemon_restart |
+| **Plugins** | plugin_list, plugin_install, plugin_call (GitHub, Jira, Sentry) |
+| **Team** | team_users (RBAC), shared_memory |
+| **IDE** | ide_configure (VSCode, Cursor, JetBrains, Neovim) |
+| **Remote** | SSH exec, SCP upload/download |
+| **Web** | search, fetch, browser automation |
+| **Memory** | save, search, list facts |
+| **Scheduler** | create, list, delete cron jobs |
+| **Vault** | save, get, list, delete secrets |
+
+---
+
+## MCP Server (IDE Integration)
+
+DevClaw exposes all tools via the [Model Context Protocol](https://modelcontextprotocol.io/), making it a backend for any AI coding tool:
+
+```bash
+devclaw mcp serve    # starts MCP server on stdio
+```
+
+**Cursor / VSCode** (`.cursor/mcp.json` or `.vscode/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "devclaw": {
+      "command": "devclaw",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+**Claude Code** (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "devclaw": {
+      "command": "devclaw",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Works with: Cursor, VSCode, Claude Code, OpenCode, Windsurf, Zed, Neovim, and any MCP-compatible client.
+
+---
+
+## CLI Reference
+
+```
+devclaw serve                  Start daemon with channels + WebUI
+devclaw chat "message"         Single message or interactive REPL
+devclaw setup                  Web-based setup wizard
+devclaw mcp serve              Start MCP server for IDE integration
+
+devclaw fix [file]             Analyze and fix errors
+devclaw explain [path]         Explain code, files, or directories
+devclaw diff [--staged]        AI review of git changes
+devclaw commit [--dry-run]     Generate commit message and commit
+devclaw how "task"             Generate shell commands without executing
+
+devclaw config init            Create default config.yaml
+devclaw config vault-init      Initialize encrypted vault
+devclaw config vault-set       Store API key in vault
+devclaw skill install <name>   Install a skill
+devclaw skill list             List installed skills
+devclaw schedule list          Show scheduled jobs
+devclaw health                 Health check (Docker/monitoring)
+devclaw shell-hook bash        Generate shell integration
+devclaw completion bash        Generate shell completions
+```
+
+**Pipe mode:**
+
+```bash
+git diff | devclaw "review this"
+npm run build 2>&1 | devclaw fix
+cat error.log | devclaw "what went wrong?"
 ```
 
 ---
@@ -97,7 +214,7 @@ Minimal `config.yaml`:
 ```yaml
 name: "DevClaw"
 trigger: "@devclaw"
-model: "gpt-5-mini"
+model: "gpt-4.1-mini"
 
 api:
   base_url: "https://api.openai.com/v1"
@@ -109,29 +226,6 @@ webui:
 ```
 
 See [`configs/devclaw.example.yaml`](configs/devclaw.example.yaml) for the full reference.
-
----
-
-## Tools
-
-40+ built-in tools across 12 categories:
-
-| Category | Tools |
-|----------|-------|
-| **Files** | read, write, edit, list, search, glob |
-| **Shell** | bash, environment variables |
-| **Remote** | SSH exec, SCP upload/download |
-| **Web** | search, fetch, browser automation |
-| **Memory** | save, search, list facts |
-| **Scheduler** | create, list, delete cron jobs |
-| **Vault** | save, get, list, delete secrets |
-| **Sessions** | list, inspect, manage conversations |
-| **Canvas** | interactive HTML/JS canvas |
-| **Subagents** | spawn specialized sub-agents |
-| **Media** | image description, audio transcription |
-| **Admin** | config reload, health check |
-
-See [docs/tools.md](docs/tools.md) for the complete reference.
 
 ---
 
@@ -170,26 +264,9 @@ See [docs/channels.md](docs/channels.md) for setup instructions.
 - **Sandbox** — skill scripts run in isolated environment
 - **Audit logging** — all tool executions logged
 - **SSRF protection** — web_fetch blocks internal network access
+- **Budget tracking** — monthly cost limits with configurable alerts
 
 See [docs/security.md](docs/security.md) for details.
-
----
-
-## CLI Reference
-
-```
-devclaw serve                  Start daemon with channels + WebUI
-devclaw chat "message"         Single message or interactive REPL
-devclaw setup                  Web-based setup wizard
-devclaw config init            Create default config.yaml
-devclaw config vault-init      Initialize encrypted vault
-devclaw config vault-set       Store API key in vault
-devclaw skill install <name>   Install a skill
-devclaw skill list             List installed skills
-devclaw schedule list          Show scheduled jobs
-devclaw health                 Health check (Docker/monitoring)
-devclaw completion bash        Generate shell completions
-```
 
 ---
 
@@ -222,10 +299,10 @@ make build && ./bin/devclaw serve
 | Topic | Link |
 |-------|------|
 | Architecture | [docs/architecture.md](docs/architecture.md) |
-| Security | [docs/security.md](docs/security.md) |
 | Features | [docs/features.md](docs/features.md) |
-| Skills Catalog | [docs/skills-catalog.md](docs/skills-catalog.md) |
+| Security | [docs/security.md](docs/security.md) |
 | Performance | [docs/performance.md](docs/performance.md) |
+| Skills Catalog | [docs/skills-catalog.md](docs/skills-catalog.md) |
 
 ---
 

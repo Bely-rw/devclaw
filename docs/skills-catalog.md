@@ -243,7 +243,7 @@ Google Calendar integration via credentials JSON.
 
 ## ClawdHub Compatible Skills
 
-DevClaw can run any skill from [ClawdHub](https://github.com/openclaw/skills) (924 stars, 23K+ commits) via the SKILL.md compatibility layer. Scripts execute inside the [sandbox](../README.md#script-sandbox).
+DevClaw can run any skill from the ClawdHub ecosystem via the SKILL.md compatibility layer. Scripts execute inside the [sandbox](../README.md#security).
 
 ### How it works
 
