@@ -4,7 +4,6 @@ import {
   Power,
   PowerOff,
   Trash2,
-  Loader2,
   CheckCircle2,
   XCircle,
   ChevronDown,
