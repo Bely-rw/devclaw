@@ -24,7 +24,7 @@ const MODES = [
   },
   {
     value: 'paranoid' as const,
-    label: 'Paranóico',
+    label: 'Paranoico',
     description: 'Todas as ações externas pedem aprovação. Máxima segurança.',
     icon: ShieldAlert,
     color: 'amber',

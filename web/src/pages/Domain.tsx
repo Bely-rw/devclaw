@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import {
   Globe,
   Server,
-  Shield,
   Save,
   Loader2,
   CheckCircle2,
@@ -11,19 +10,17 @@ import {
   Network,
   Eye,
   EyeOff,
-  Info,
-  Plus,
   X,
+  Lock,
+  Unlock,
+  ArrowUpRight,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { DomainConfig } from '@/lib/api'
 
-const inputClass =
-  'flex h-11 w-full rounded-xl border border-zinc-700/50 bg-zinc-800/50 px-4 text-sm text-white placeholder:text-zinc-600 outline-none transition-all focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10'
-
 /**
  * Página de configuração de domínio e rede.
- * Permite configurar WebUI, Gateway API, Tailscale e CORS.
+ * Gerencia WebUI, Gateway API, Tailscale e CORS.
  */
 export function Domain() {
   const [config, setConfig] = useState<DomainConfig | null>(null)
@@ -31,7 +28,6 @@ export function Domain() {
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
-  /* Form state */
   const [webuiAddress, setWebuiAddress] = useState('')
   const [webuiToken, setWebuiToken] = useState('')
   const [showWebuiToken, setShowWebuiToken] = useState(false)
@@ -46,7 +42,7 @@ export function Domain() {
   const [tailscaleEnabled, setTailscaleEnabled] = useState(false)
   const [tailscaleServe, setTailscaleServe] = useState(false)
   const [tailscaleFunnel, setTailscaleFunnel] = useState(false)
-  const [tailscalePort, setTailscalePort] = useState(8080)
+  const [tailscalePort, setTailscalePort] = useState(8085)
 
   useEffect(() => {
     api.domain.get()
@@ -54,12 +50,12 @@ export function Domain() {
         setConfig(data)
         setWebuiAddress(data.webui_address || ':8090')
         setGatewayEnabled(data.gateway_enabled)
-        setGatewayAddress(data.gateway_address || ':8080')
+        setGatewayAddress(data.gateway_address || ':8085')
         setCorsOrigins(data.cors_origins || [])
         setTailscaleEnabled(data.tailscale_enabled)
         setTailscaleServe(data.tailscale_serve)
         setTailscaleFunnel(data.tailscale_funnel)
-        setTailscalePort(data.tailscale_port || 8080)
+        setTailscalePort(data.tailscale_port || 8085)
       })
       .catch(() => setMessage({ type: 'error', text: 'Erro ao carregar configuração' }))
       .finally(() => setLoading(false))
@@ -81,11 +77,11 @@ export function Domain() {
         tailscale_funnel: tailscaleFunnel,
         tailscale_port: tailscalePort,
       })
-      setMessage({ type: 'success', text: 'Configuração salva. Reinicie para aplicar alterações de porta.' })
+      setMessage({ type: 'success', text: 'Salvo. Reinicie para aplicar alterações de porta.' })
       setWebuiToken('')
       setGatewayToken('')
     } catch {
-      setMessage({ type: 'error', text: 'Erro ao salvar configuração' })
+      setMessage({ type: 'error', text: 'Erro ao salvar' })
     } finally {
       setSaving(false)
     }
@@ -99,293 +95,284 @@ export function Domain() {
     }
   }
 
-  const removeCorsOrigin = (origin: string) => {
-    setCorsOrigins(corsOrigins.filter((o) => o !== origin))
-  }
-
   if (loading) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-[var(--color-dc-darker)]">
+      <div className="flex flex-1 items-center justify-center bg-dc-darker">
         <div className="h-10 w-10 rounded-full border-4 border-orange-500/30 border-t-orange-500 animate-spin" />
       </div>
     )
   }
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden bg-[var(--color-dc-darker)]">
+    <div className="flex flex-1 flex-col overflow-hidden bg-dc-darker">
       <div className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto px-8 py-10">
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600">Rede</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-zinc-600">Rede</p>
             <h1 className="mt-1 text-2xl font-black text-white tracking-tight">Domínio & Acesso</h1>
-            <p className="mt-2 text-base text-gray-500">Configure como o DevClaw é acessado</p>
           </div>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="flex cursor-pointer items-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-orange-500/20 transition-all hover:shadow-orange-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex cursor-pointer items-center gap-2 rounded-xl bg-orange-500 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-orange-500/15 transition-all hover:bg-orange-400 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             {saving ? 'Salvando...' : 'Salvar'}
           </button>
         </div>
 
-        {/* Message */}
+        {/* Toast */}
         {message && (
-          <div className={`mt-6 rounded-2xl px-5 py-4 text-sm ring-1 ${
+          <div className={`mt-5 flex items-center gap-2.5 rounded-xl px-4 py-3 text-sm ring-1 ${
             message.type === 'success'
               ? 'bg-emerald-500/5 text-emerald-400 ring-emerald-500/20'
               : 'bg-red-500/5 text-red-400 ring-red-500/20'
           }`}>
+            {message.type === 'success' ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <XCircle className="h-4 w-4 shrink-0" />}
             {message.text}
           </div>
         )}
 
-        {/* Status bar */}
+        {/* Status overview */}
         {config && (
-          <div className="mt-6 grid grid-cols-3 gap-3">
-            <StatusCard
+          <div className="mt-6 grid grid-cols-3 gap-2.5">
+            <Endpoint
               label="WebUI"
               url={config.webui_url}
-              active={true}
+              active
               secure={config.webui_auth_configured}
             />
-            <StatusCard
-              label="Gateway API"
+            <Endpoint
+              label="Gateway"
               url={config.gateway_url}
               active={config.gateway_enabled}
               secure={config.gateway_auth_configured}
             />
-            <StatusCard
+            <Endpoint
               label="Tailscale"
               url={config.public_url || config.tailscale_url}
               active={config.tailscale_enabled}
-              secure={true}
+              secure
             />
           </div>
         )}
 
-        {/* ── WebUI Section ── */}
-        <Section icon={Globe} title="Web UI" description="Painel de controle e chat">
-          <Field label="Endereço de escuta" hint="Host:porta onde o painel será servido">
-            <input
-              value={webuiAddress}
-              onChange={(e) => setWebuiAddress(e.target.value)}
-              placeholder=":8090"
-              className={inputClass}
-            />
-          </Field>
-
-          <Field label="Senha do painel" hint="Deixe em branco para manter a senha atual">
-            <div className="relative">
-              <input
-                type={showWebuiToken ? 'text' : 'password'}
+        {/* ── WebUI ── */}
+        <Card className="mt-8">
+          <CardHeader icon={Globe} title="Web UI" />
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <Field label="Porta">
+              <Input value={webuiAddress} onChange={setWebuiAddress} placeholder=":8090" />
+            </Field>
+            <Field label="Senha">
+              <PasswordInput
                 value={webuiToken}
-                onChange={(e) => setWebuiToken(e.target.value)}
-                placeholder={config?.webui_auth_configured ? '••••••••' : 'Sem senha configurada'}
-                className={`${inputClass} pr-10`}
+                onChange={setWebuiToken}
+                show={showWebuiToken}
+                onToggle={() => setShowWebuiToken(!showWebuiToken)}
+                placeholder={config?.webui_auth_configured ? '••••••••' : 'Sem senha'}
               />
-              <button
-                type="button"
-                onClick={() => setShowWebuiToken(!showWebuiToken)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
-              >
-                {showWebuiToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-          </Field>
-        </Section>
+            </Field>
+          </div>
+        </Card>
 
-        {/* ── Gateway API Section ── */}
-        <Section icon={Server} title="Gateway API" description="API REST compatível com OpenAI + WebSocket">
+        {/* ── Gateway ── */}
+        <Card className="mt-4">
           <div className="flex items-center justify-between">
-            <div>
-              <span className="text-sm font-medium text-zinc-300">Ativar Gateway</span>
-              <p className="text-xs text-zinc-500">Expõe a API HTTP em uma porta separada</p>
-            </div>
+            <CardHeader icon={Server} title="Gateway API" />
             <Toggle value={gatewayEnabled} onChange={setGatewayEnabled} />
           </div>
 
           {gatewayEnabled && (
-            <>
-              <Field label="Endereço de escuta" hint="Porta da API (separada do WebUI)">
-                <input
-                  value={gatewayAddress}
-                  onChange={(e) => setGatewayAddress(e.target.value)}
-                  placeholder=":8080"
-                  className={inputClass}
-                />
-              </Field>
-
-              <Field label="Auth Token" hint="Bearer token para autenticação. Deixe em branco para manter.">
-                <div className="relative">
-                  <input
-                    type={showGatewayToken ? 'text' : 'password'}
+            <div className="mt-5 space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Porta">
+                  <Input value={gatewayAddress} onChange={setGatewayAddress} placeholder=":8085" />
+                </Field>
+                <Field label="Auth Token">
+                  <PasswordInput
                     value={gatewayToken}
-                    onChange={(e) => setGatewayToken(e.target.value)}
+                    onChange={setGatewayToken}
+                    show={showGatewayToken}
+                    onToggle={() => setShowGatewayToken(!showGatewayToken)}
                     placeholder={config?.gateway_auth_configured ? '••••••••' : 'Sem token'}
-                    className={`${inputClass} pr-10`}
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowGatewayToken(!showGatewayToken)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
-                  >
-                    {showGatewayToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </Field>
+                </Field>
+              </div>
 
-              <Field label="CORS Origins" hint="Domínios autorizados para acessar a API">
-                <div className="space-y-2">
+              {/* CORS */}
+              <Field label="CORS Origins">
+                <div className="flex flex-wrap gap-1.5">
                   {corsOrigins.map((origin) => (
-                    <div key={origin} className="flex items-center gap-2">
-                      <span className="flex-1 rounded-lg bg-zinc-800/50 px-3 py-2 text-sm font-mono text-zinc-300">
-                        {origin}
-                      </span>
-                      <button
-                        onClick={() => removeCorsOrigin(origin)}
-                        className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                  <div className="flex items-center gap-2">
-                    <input
-                      value={newCors}
-                      onChange={(e) => setNewCors(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && addCorsOrigin()}
-                      placeholder="https://example.com"
-                      className={`${inputClass} flex-1`}
-                    />
-                    <button
-                      onClick={addCorsOrigin}
-                      disabled={!newCors.trim()}
-                      className="flex h-11 w-11 cursor-pointer items-center justify-center rounded-xl border border-zinc-700/50 bg-zinc-800/50 text-zinc-400 transition-all hover:border-zinc-600 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                    <span
+                      key={origin}
+                      className="group flex items-center gap-1.5 rounded-lg bg-zinc-800 px-2.5 py-1.5 text-xs font-mono text-zinc-300 ring-1 ring-zinc-700/50"
                     >
-                      <Plus className="h-4 w-4" />
-                    </button>
-                  </div>
+                      {origin}
+                      <button
+                        onClick={() => setCorsOrigins(corsOrigins.filter((o) => o !== origin))}
+                        className="cursor-pointer text-zinc-600 transition-colors hover:text-red-400"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                  <input
+                    value={newCors}
+                    onChange={(e) => setNewCors(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && addCorsOrigin()}
+                    onBlur={addCorsOrigin}
+                    placeholder="+ adicionar origem"
+                    className="min-w-[140px] flex-1 rounded-lg bg-transparent px-2 py-1.5 text-xs text-zinc-400 outline-none placeholder:text-zinc-600"
+                  />
                 </div>
               </Field>
-            </>
-          )}
-        </Section>
-
-        {/* ── Tailscale Section ── */}
-        <Section icon={Network} title="Tailscale" description="Acesso remoto seguro com HTTPS automático">
-          <div className="flex items-center justify-between">
-            <div>
-              <span className="text-sm font-medium text-zinc-300">Ativar Tailscale</span>
-              <p className="text-xs text-zinc-500">Requer Tailscale instalado e conectado</p>
             </div>
+          )}
+        </Card>
+
+        {/* ── Tailscale ── */}
+        <Card className="mt-4 mb-10">
+          <div className="flex items-center justify-between">
+            <CardHeader icon={Network} title="Tailscale" />
             <Toggle value={tailscaleEnabled} onChange={setTailscaleEnabled} />
           </div>
 
           {tailscaleEnabled && (
-            <>
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-sm font-medium text-zinc-300">Tailscale Serve</span>
-                  <p className="text-xs text-zinc-500">HTTPS acessível dentro da sua Tailnet</p>
-                </div>
-                <Toggle value={tailscaleServe} onChange={setTailscaleServe} />
-              </div>
+            <div className="mt-5 space-y-3">
+              <ToggleRow
+                label="Serve"
+                description="HTTPS dentro da sua Tailnet"
+                value={tailscaleServe}
+                onChange={setTailscaleServe}
+              />
+              <ToggleRow
+                label="Funnel"
+                description="HTTPS público na internet"
+                value={tailscaleFunnel}
+                onChange={setTailscaleFunnel}
+              />
 
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-sm font-medium text-zinc-300">Tailscale Funnel</span>
-                  <p className="text-xs text-zinc-500">HTTPS acessível publicamente na internet</p>
-                </div>
-                <Toggle value={tailscaleFunnel} onChange={setTailscaleFunnel} />
+              <div className="pt-1">
+                <Field label="Porta local">
+                  <Input
+                    value={String(tailscalePort)}
+                    onChange={(v) => setTailscalePort(parseInt(v) || 8085)}
+                    placeholder="8085"
+                    type="number"
+                  />
+                </Field>
               </div>
-
-              <Field label="Porta local" hint="Porta que o Tailscale vai encaminhar (default: 8080)">
-                <input
-                  type="number"
-                  value={tailscalePort}
-                  onChange={(e) => setTailscalePort(parseInt(e.target.value) || 8080)}
-                  placeholder="8080"
-                  className={inputClass}
-                />
-              </Field>
 
               {config?.tailscale_hostname && (
-                <div className="flex items-start gap-3 rounded-xl bg-zinc-800/30 px-4 py-3 ring-1 ring-zinc-700/30">
-                  <Info className="mt-0.5 h-4 w-4 shrink-0 text-orange-400" />
-                  <div>
-                    <p className="text-sm text-zinc-300">
-                      Hostname: <code className="text-orange-400">{config.tailscale_hostname}</code>
-                    </p>
+                <div className="flex items-center gap-3 rounded-xl bg-emerald-500/5 px-4 py-3 ring-1 ring-emerald-500/15">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-zinc-200 truncate">{config.tailscale_hostname}</p>
                     {config.tailscale_url && (
                       <a
                         href={config.tailscale_url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="mt-1 flex items-center gap-1 text-xs text-orange-400/70 hover:text-orange-400 transition-colors"
+                        className="flex items-center gap-1 text-xs text-emerald-400/70 hover:text-emerald-400 transition-colors"
                       >
-                        <ExternalLink className="h-3 w-3" />
                         {config.tailscale_url}
+                        <ArrowUpRight className="h-3 w-3" />
                       </a>
                     )}
                   </div>
                 </div>
               )}
-            </>
+            </div>
           )}
-        </Section>
+        </Card>
       </div>
     </div>
   )
 }
 
-/* ── Reusable Components ── */
+/* ── Components ── */
 
-function Section({
-  icon: Icon,
-  title,
-  description,
-  children,
-}: {
-  icon: React.FC<{ className?: string }>
-  title: string
-  description: string
-  children: React.ReactNode
-}) {
+function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className="mt-8">
-      <div className="mb-5 flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-orange-500/10">
-          <Icon className="h-4.5 w-4.5 text-orange-400" />
-        </div>
-        <div>
-          <h2 className="text-base font-bold text-white">{title}</h2>
-          <p className="text-xs text-zinc-500">{description}</p>
-        </div>
-      </div>
-      <div className="space-y-5 rounded-2xl border border-white/[0.06] bg-[var(--color-dc-dark)]/80 p-6">
-        {children}
-      </div>
+    <div className={`rounded-2xl border border-white/6 bg-(--color-dc-dark)/80 p-5 ${className}`}>
+      {children}
     </div>
   )
 }
 
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string
-  hint?: string
-  children: React.ReactNode
-}) {
+function CardHeader({ icon: Icon, title }: { icon: React.FC<{ className?: string }>; title: string }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-500/10">
+        <Icon className="h-4 w-4 text-orange-400" />
+      </div>
+      <h2 className="text-sm font-bold text-white">{title}</h2>
+    </div>
+  )
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-zinc-300">{label}</label>
+      <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-zinc-500">{label}</label>
       {children}
-      {hint && <p className="mt-1.5 text-xs text-zinc-500">{hint}</p>}
+    </div>
+  )
+}
+
+function Input({
+  value,
+  onChange,
+  placeholder,
+  type = 'text',
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  type?: string
+}) {
+  return (
+    <input
+      type={type}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className="flex h-10 w-full rounded-lg border border-zinc-700/50 bg-zinc-800/50 px-3 text-sm text-white placeholder:text-zinc-600 outline-none transition-all focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10"
+    />
+  )
+}
+
+function PasswordInput({
+  value,
+  onChange,
+  show,
+  onToggle,
+  placeholder,
+}: {
+  value: string
+  onChange: (v: string) => void
+  show: boolean
+  onToggle: () => void
+  placeholder?: string
+}) {
+  return (
+    <div className="relative">
+      <input
+        type={show ? 'text' : 'password'}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="flex h-10 w-full rounded-lg border border-zinc-700/50 bg-zinc-800/50 px-3 pr-9 text-sm text-white placeholder:text-zinc-600 outline-none transition-all focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10"
+      />
+      <button
+        type="button"
+        onClick={onToggle}
+        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-300 transition-colors"
+      >
+        {show ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+      </button>
     </div>
   )
 }
@@ -395,20 +382,42 @@ function Toggle({ value, onChange }: { value: boolean; onChange: (v: boolean) =>
     <button
       type="button"
       onClick={() => onChange(!value)}
-      className={`relative h-6 w-11 cursor-pointer rounded-full transition-colors ${
+      className={`relative h-6 w-10 shrink-0 cursor-pointer rounded-full transition-colors ${
         value ? 'bg-orange-500' : 'bg-zinc-700'
       }`}
     >
       <span
-        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-          value ? 'translate-x-5' : 'translate-x-0.5'
+        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${
+          value ? 'translate-x-[18px]' : 'translate-x-0.5'
         }`}
       />
     </button>
   )
 }
 
-function StatusCard({
+function ToggleRow({
+  label,
+  description,
+  value,
+  onChange,
+}: {
+  label: string
+  description: string
+  value: boolean
+  onChange: (v: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-xl bg-zinc-800/30 px-4 py-3 ring-1 ring-zinc-700/20">
+      <div>
+        <span className="text-sm font-medium text-zinc-200">{label}</span>
+        <p className="text-[11px] text-zinc-500">{description}</p>
+      </div>
+      <Toggle value={value} onChange={onChange} />
+    </div>
+  )
+}
+
+function Endpoint({
   label,
   url,
   active,
@@ -420,16 +429,24 @@ function StatusCard({
   secure: boolean
 }) {
   return (
-    <div className="rounded-xl border border-white/[0.06] bg-[var(--color-dc-dark)]/80 px-4 py-3">
+    <div className={`rounded-xl px-3.5 py-2.5 ring-1 transition-colors ${
+      active
+        ? 'bg-emerald-500/3 ring-emerald-500/15'
+        : 'bg-zinc-800/30 ring-zinc-700/20'
+    }`}>
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-zinc-400">{label}</span>
-        <div className="flex items-center gap-1.5">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">{label}</span>
+        <div className="flex items-center gap-1">
           {active ? (
-            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
           ) : (
-            <XCircle className="h-3.5 w-3.5 text-zinc-600" />
+            <span className="h-1.5 w-1.5 rounded-full bg-zinc-600" />
           )}
-          {active && secure && <Shield className="h-3 w-3 text-orange-400" />}
+          {active && (secure ? (
+            <Lock className="h-3 w-3 text-emerald-400/60" />
+          ) : (
+            <Unlock className="h-3 w-3 text-amber-400/60" />
+          ))}
         </div>
       </div>
       {url ? (
@@ -437,13 +454,13 @@ function StatusCard({
           href={url}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-1.5 flex items-center gap-1 text-xs font-mono text-zinc-300 hover:text-orange-400 transition-colors truncate"
+          className="mt-1 flex items-center gap-1 text-[11px] font-mono text-zinc-400 hover:text-orange-400 transition-colors truncate"
         >
-          <ExternalLink className="h-3 w-3 shrink-0" />
-          {url}
+          {url.replace(/^https?:\/\//, '')}
+          <ExternalLink className="h-2.5 w-2.5 shrink-0" />
         </a>
       ) : (
-        <p className="mt-1.5 text-xs text-zinc-600">{active ? 'Ativo' : 'Desativado'}</p>
+        <p className="mt-1 text-[11px] text-zinc-600">{active ? 'Ativo' : 'Off'}</p>
       )}
     </div>
   )

@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/jholhewres/devclaw?style=for-the-badge)](https://github.com/jholhewres/devclaw/releases)
 [![License](https://img.shields.io/github/license/jholhewres/devclaw?style=for-the-badge)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8?style=for-the-badge&logo=go)](https://go.dev)
-[![CI](https://img.shields.io/github/actions/workflow/status/jholhewres/devclaw/release.yml?style=for-the-badge)](https://github.com/jholhewres/devclaw/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/jholhewres/devclaw/ci.yml?branch=master&style=for-the-badge&label=build)](https://github.com/jholhewres/devclaw/actions/workflows/ci.yml)
 
 Open-source AI agent for tech teams — devs, DevOps, QA, PMs, designers, and everyone in between. Single Go binary with CLI, WebUI, MCP server, and messaging channels. Full system access, persistent memory, encrypted vault, and 70+ built-in tools.
 
@@ -99,7 +99,7 @@ iwr -useb https://raw.githubusercontent.com/jholhewres/devclaw/main/scripts/inst
            │
     ┌──────▼──────────────────────────────┐
     │  Cursor  VSCode  Claude Code  Aider │
-    │  OpenCode  Windsurf  Zed  Neovim   │
+    │  OpenCode  Windsurf  Zed  Neovim    │
     └─────────────────────────────────────┘
 ```
 
@@ -308,7 +308,7 @@ make build && ./bin/devclaw serve
 
 ## Author
 
-**Joel Holhewres** — [@jholhewres](https://github.com/jholhewres)
+**Jhol Hewres** — [@jholhewres](https://github.com/jholhewres)
 
 ## License
 

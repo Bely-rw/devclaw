@@ -32,11 +32,11 @@ export function Config() {
       await api.config.update(parsed)
       setConfig(parsed)
       setOriginalText(rawText)
-      setMessage({ type: 'success', text: 'Configuracao salva com sucesso' })
+      setMessage({ type: 'success', text: 'Configuração salva com sucesso' })
     } catch (err) {
       setMessage({
         type: 'error',
-        text: err instanceof SyntaxError ? 'JSON invalido' : 'Erro ao salvar',
+        text: err instanceof SyntaxError ? 'JSON inválido' : 'Erro ao salvar',
       })
     } finally {
       setSaving(false)
@@ -50,27 +50,27 @@ export function Config() {
 
   if (loading) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-[var(--color-dc-darker)]">
+      <div className="flex flex-1 items-center justify-center bg-dc-darker">
         <div className="h-10 w-10 rounded-full border-4 border-orange-500/30 border-t-orange-500 animate-spin" />
       </div>
     )
   }
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden bg-[var(--color-dc-darker)]">
+    <div className="flex flex-1 flex-col overflow-hidden bg-dc-darker">
       <div className="mx-auto w-full max-w-5xl flex-1 overflow-y-auto px-8 py-10">
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600">Sistema</p>
-            <h1 className="mt-1 text-2xl font-black text-white tracking-tight">Configuracao</h1>
-            <p className="mt-2 text-base text-gray-500">Edite a configuracao do assistente</p>
+            <h1 className="mt-1 text-2xl font-black text-white tracking-tight">Configuração</h1>
+            <p className="mt-2 text-base text-gray-500">Edite a configuração do assistente</p>
           </div>
           <div className="flex items-center gap-3">
             {hasChanges && (
               <button
                 onClick={handleReset}
-                className="flex cursor-pointer items-center gap-2 rounded-xl border border-white/[0.08] bg-[var(--color-dc-dark)] px-5 py-3 text-sm font-semibold text-gray-400 transition-all hover:border-white/[0.12] hover:text-white"
+                className="flex cursor-pointer items-center gap-2 rounded-xl border border-white/8 bg-dc-dark px-5 py-3 text-sm font-semibold text-gray-400 transition-all hover:border-white/12 hover:text-white"
               >
                 <RotateCcw className="h-4 w-4" />
                 Desfazer
@@ -79,7 +79,7 @@ export function Config() {
             <button
               onClick={handleSave}
               disabled={!hasChanges || saving}
-              className="flex cursor-pointer items-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-orange-500/20 transition-all hover:shadow-orange-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex cursor-pointer items-center gap-2 rounded-xl bg-linear-to-r from-orange-500 to-amber-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-orange-500/20 transition-all hover:shadow-orange-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Save className="h-4 w-4" />
               {saving ? 'Salvando...' : 'Salvar'}
@@ -99,8 +99,8 @@ export function Config() {
         )}
 
         {/* Editor */}
-        <div className="mt-8 overflow-hidden rounded-2xl border border-white/[0.06]">
-          <div className="flex items-center justify-between border-b border-white/[0.06] bg-[var(--color-dc-dark)] px-6 py-3">
+        <div className="mt-8 overflow-hidden rounded-2xl border border-white/6">
+          <div className="flex items-center justify-between border-b border-white/6 bg-dc-dark px-6 py-3">
             <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600">config.json</span>
             {hasChanges && (
               <span className="rounded-full bg-orange-500/15 px-3 py-1 text-[10px] font-bold text-orange-400 ring-1 ring-orange-500/20">
@@ -111,7 +111,7 @@ export function Config() {
           <textarea
             value={rawText}
             onChange={(e) => setRawText(e.target.value)}
-            className="w-full resize-none bg-[var(--color-dc-darker)] p-6 font-mono text-sm leading-relaxed text-gray-300 outline-none"
+            className="w-full resize-none bg-dc-darker p-6 font-mono text-sm leading-relaxed text-gray-300 outline-none"
             rows={Math.max(20, rawText.split('\n').length + 2)}
             spellCheck={false}
           />
@@ -120,12 +120,12 @@ export function Config() {
         {/* Sections preview */}
         {config && !hasChanges && (
           <div className="mt-8">
-            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600 mb-4">Secoes</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600 mb-4">Seções</p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {Object.keys(config).map((key) => (
                 <div
                   key={key}
-                  className="rounded-2xl border border-white/[0.06] bg-[var(--color-dc-dark)] px-5 py-4"
+                  className="rounded-2xl border border-white/6 bg-dc-dark px-5 py-4"
                 >
                   <span className="text-base font-bold text-white">{key}</span>
                   <p className="mt-1 text-sm text-gray-500">

@@ -128,7 +128,7 @@ type GatewayConfig struct {
 	// Enabled turns the gateway on/off (default: false).
 	Enabled bool `yaml:"enabled"`
 
-	// Address is the listen address (default: ":8080").
+	// Address is the listen address (default: ":8085").
 	Address string `yaml:"address"`
 
 	// AuthToken is the Bearer token for /api/* and /v1/* auth (empty = no auth).
@@ -566,7 +566,7 @@ func DefaultConfig() *Config {
 		},
 		Gateway: GatewayConfig{
 			Enabled: false,
-			Address: ":8080",
+			Address: ":8085",
 		},
 		BlockStream: DefaultBlockStreamConfig(),
 		WebSearch: WebSearchConfig{

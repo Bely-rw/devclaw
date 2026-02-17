@@ -37,7 +37,7 @@ WORKDIR /home/devclaw
 
 COPY --from=builder /app/devclaw /usr/local/bin/devclaw
 
-EXPOSE 8080 8090
+EXPOSE 8085 8090
 
 ENTRYPOINT ["devclaw"]
 CMD ["serve"]

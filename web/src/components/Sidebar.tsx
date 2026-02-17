@@ -26,7 +26,7 @@ const controlLinks = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/channels', icon: Radio, label: 'Canais' },
   { to: '/jobs', icon: Clock, label: 'Jobs' },
-  { to: '/sessions', icon: MessageSquare, label: 'Sessoes' },
+  { to: '/sessions', icon: MessageSquare, label: 'Sessões' },
 ]
 
 const configLinks = [
@@ -46,7 +46,7 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
   if (!sidebarOpen) return null
 
   return (
-    <aside className="flex h-full w-64 flex-col border-r border-white/[0.06] bg-[var(--color-dc-dark)]">
+    <aside className="flex h-full w-64 flex-col border-r border-white/6 bg-dc-dark">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-4">
         <button
@@ -63,7 +63,7 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
         <button
           onClick={toggleSidebar}
           title="Fechar sidebar"
-          className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-white/[0.06] hover:text-gray-300"
+          className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-white/6 hover:text-gray-300"
         >
           <PanelLeftClose className="h-4.5 w-4.5" />
         </button>
@@ -84,7 +84,7 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
                 'flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all',
                 isActive
                   ? 'bg-orange-500/10 text-orange-400'
-                  : 'text-gray-400 hover:bg-white/[0.04] hover:text-gray-200',
+                  : 'text-gray-400 hover:bg-white/4 hover:text-gray-200',
               )}
             >
               <Icon className="h-4.5 w-4.5" />
@@ -94,7 +94,7 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
         })}
 
         <p className="mb-1.5 mt-6 px-2 text-[11px] font-semibold uppercase tracking-wider text-gray-600">
-          Configuracao
+          Configuração
         </p>
         {configLinks.map(({ to, icon: Icon, label }) => {
           const isActive = location.pathname === to
@@ -106,7 +106,7 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
                 'flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all',
                 isActive
                   ? 'bg-orange-500/10 text-orange-400'
-                  : 'text-gray-400 hover:bg-white/[0.04] hover:text-gray-200',
+                  : 'text-gray-400 hover:bg-white/4 hover:text-gray-200',
               )}
             >
               <Icon className="h-4.5 w-4.5" />
@@ -128,7 +128,7 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
       </nav>
 
       {/* Footer */}
-      <div className="border-t border-white/[0.06] px-4 py-3">
+      <div className="border-t border-white/6 px-4 py-3">
         <div className="flex items-center justify-between">
           <p className="text-xs text-gray-600">DevClaw v1.6.0</p>
           <div className="flex items-center gap-1.5">

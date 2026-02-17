@@ -40,7 +40,7 @@ func New(assistant *copilot.Assistant, cfg copilot.GatewayConfig, logger *slog.L
 		logger = slog.Default()
 	}
 	if cfg.Address == "" {
-		cfg.Address = ":8080"
+		cfg.Address = ":8085"
 	}
 	return &Gateway{
 		assistant: assistant,

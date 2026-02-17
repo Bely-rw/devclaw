@@ -11,7 +11,7 @@ interface ChatInputProps {
 }
 
 export function ChatInput({
-  onSend, onAbort, isStreaming = false, disabled = false, placeholder = 'Escreva sua mensagem...',
+  onSend, onAbort, isStreaming = false, disabled = false, placeholder = 'Pergunte algo ou descreva uma tarefa...',
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -42,12 +42,14 @@ export function ChatInput({
   }
 
   return (
-    <div className="border-t border-white/[0.06] bg-[var(--color-dc-darker)] px-6 py-5">
+    <div className="px-6 pb-5 pt-3">
       <div
         className={cn(
-          'flex items-end gap-4 rounded-2xl border border-white/[0.08] bg-[var(--color-dc-dark)] px-5 py-4',
+          'flex items-end gap-3 rounded-2xl border bg-zinc-900/80 px-4 py-3',
           'transition-all',
-          'focus-within:border-orange-500/30 focus-within:ring-2 focus-within:ring-orange-500/10',
+          isStreaming
+            ? 'border-orange-500/20 ring-2 ring-orange-500/5'
+            : 'border-zinc-700/40 focus-within:border-orange-500/30 focus-within:ring-2 focus-within:ring-orange-500/10',
         )}
       >
         <textarea
@@ -58,34 +60,34 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="flex-1 resize-none bg-transparent text-base text-white outline-none placeholder:text-gray-600 max-h-[200px] disabled:opacity-50"
+          className="flex-1 resize-none bg-transparent text-sm leading-relaxed text-white outline-none placeholder:text-zinc-600 max-h-[200px] disabled:opacity-50"
         />
         {isStreaming ? (
           <button
             onClick={() => onAbort?.()}
-            className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-red-500/15 text-red-400 ring-1 ring-red-500/20 transition-all hover:bg-red-500/25"
-            title="Parar"
+            className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-red-500/15 text-red-400 ring-1 ring-red-500/20 transition-all hover:bg-red-500/25"
+            title="Parar geração"
           >
-            <Square className="h-4.5 w-4.5" fill="currentColor" />
+            <Square className="h-4 w-4" fill="currentColor" />
           </button>
         ) : (
           <button
             onClick={handleSend}
             disabled={!value.trim() || disabled}
             className={cn(
-              'flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl transition-all',
+              'flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-xl transition-all',
               value.trim()
-                ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-lg shadow-orange-500/20 hover:shadow-orange-500/30'
-                : 'bg-white/[0.06] text-gray-600',
+                ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20 hover:bg-orange-400'
+                : 'bg-zinc-800 text-zinc-600',
             )}
             title="Enviar"
           >
-            <ArrowUp className="h-5 w-5" />
+            <ArrowUp className="h-4.5 w-4.5" />
           </button>
         )}
       </div>
-      <p className="mt-3 text-center text-xs text-gray-700">
-        DevClaw pode cometer erros. Considere verificar informacoes importantes.
+      <p className="mt-2 text-center text-[11px] text-zinc-700">
+        DevClaw pode cometer erros. Verifique informações importantes.
       </p>
     </div>
   )

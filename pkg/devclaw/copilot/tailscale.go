@@ -10,8 +10,8 @@
 //
 // Architecture:
 //
-//	Internet ──HTTPS──▶ Tailscale Funnel ──▶ Local DevClaw (e.g. :8080)
-//	Tailnet  ──HTTPS──▶ Tailscale Serve  ──▶ Local DevClaw (e.g. :8080)
+//	Internet ──HTTPS──▶ Tailscale Funnel ──▶ Local DevClaw (e.g. :8085)
+//	Tailnet  ──HTTPS──▶ Tailscale Serve  ──▶ Local DevClaw (e.g. :8085)
 package copilot
 
 import (
@@ -37,7 +37,7 @@ type TailscaleConfig struct {
 	// Requires Tailscale Funnel to be enabled in your Tailscale admin console.
 	Funnel bool `yaml:"funnel"`
 
-	// Port is the local port to proxy (default: 8080).
+	// Port is the local port to proxy (default: 8085).
 	Port int `yaml:"port"`
 
 	// Hostname is the Tailscale hostname to use (empty = auto from `tailscale status`).
@@ -61,7 +61,7 @@ func NewTailscaleManager(cfg TailscaleConfig, logger *slog.Logger) *TailscaleMan
 		logger = slog.Default()
 	}
 	if cfg.Port <= 0 {
-		cfg.Port = 8080
+		cfg.Port = 8085
 	}
 	return &TailscaleManager{
 		cfg:    cfg,

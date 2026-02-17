@@ -1,9 +1,27 @@
 import { useParams } from 'react-router-dom'
 import { useEffect, useRef } from 'react'
-import { Terminal, Sparkles } from 'lucide-react'
+import {
+  Terminal,
+  GitBranch,
+  Database,
+  Globe,
+  FileCode,
+  Server,
+  Wrench,
+  Zap,
+} from 'lucide-react'
 import { ChatMessage } from '@/components/ChatMessage'
 import { ChatInput } from '@/components/ChatInput'
 import { useChat } from '@/hooks/useChat'
+
+const SUGGESTIONS = [
+  { icon: GitBranch, label: 'Git status', prompt: 'Qual o status do meu repositório git?' },
+  { icon: Server, label: 'Processos', prompt: 'Liste os processos rodando na porta 3000' },
+  { icon: Database, label: 'DB schema', prompt: 'Mostre o schema do banco de dados' },
+  { icon: FileCode, label: 'Analisar código', prompt: 'Analise a estrutura do projeto atual' },
+  { icon: Globe, label: 'API test', prompt: 'Faça um GET em https://httpbin.org/get' },
+  { icon: Wrench, label: 'Docker ps', prompt: 'Liste os containers Docker rodando' },
+]
 
 export function Chat() {
   const { sessionId } = useParams<{ sessionId: string }>()
@@ -18,20 +36,43 @@ export function Chat() {
   const hasMessages = messages.length > 0 || streamingContent
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden bg-[var(--color-dc-darker)]">
+    <div className="flex flex-1 flex-col overflow-hidden bg-dc-darker">
       <div className="flex-1 overflow-y-auto">
         {!hasMessages ? (
-          <div className="flex h-full flex-col items-center justify-center px-4">
-            <div className="relative mb-8">
-              <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-orange-500/10">
-                <Terminal className="h-10 w-10 text-orange-400" />
+          <div className="flex h-full flex-col items-center justify-center px-6">
+            <div className="flex flex-col items-center -mt-12">
+              {/* Logo */}
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-linear-to-br from-orange-500/20 to-amber-500/10 ring-1 ring-orange-500/20">
+                <Terminal className="h-8 w-8 text-orange-400" />
               </div>
-              <div className="absolute -right-1.5 -top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-orange-500">
-                <Sparkles className="h-3.5 w-3.5 text-white" />
+
+              <h2 className="mt-5 text-xl font-bold text-white">O que vamos fazer?</h2>
+              <p className="mt-1.5 text-sm text-zinc-500">Pergunte qualquer coisa ou escolha uma sugestão</p>
+
+              {/* Suggestions grid */}
+              <div className="mt-8 grid w-full max-w-lg grid-cols-2 gap-2 sm:grid-cols-3">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s.label}
+                    onClick={() => sendMessage(s.prompt)}
+                    className="group flex cursor-pointer items-center gap-2.5 rounded-xl bg-zinc-800/40 px-3.5 py-3 text-left ring-1 ring-zinc-700/20 transition-all hover:bg-zinc-800/60 hover:ring-orange-500/20"
+                  >
+                    <s.icon className="h-4 w-4 shrink-0 text-zinc-500 transition-colors group-hover:text-orange-400" />
+                    <span className="text-xs font-medium text-zinc-400 transition-colors group-hover:text-zinc-200">{s.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Quick tips */}
+              <div className="mt-6 flex items-center gap-4 text-[11px] text-zinc-600">
+                <span className="flex items-center gap-1.5">
+                  <Zap className="h-3 w-3 text-orange-500/50" />
+                  70+ ferramentas nativas
+                </span>
+                <span className="h-3 w-px bg-zinc-700/50" />
+                <span>Enter para enviar, Shift+Enter para nova linha</span>
               </div>
             </div>
-            <h2 className="text-2xl font-bold text-white">Como posso ajudar?</h2>
-            <p className="mt-2 text-sm text-gray-500">Escreva uma mensagem para comecar a conversa</p>
           </div>
         ) : (
           <div className="mx-auto max-w-3xl space-y-1 px-6 py-8">

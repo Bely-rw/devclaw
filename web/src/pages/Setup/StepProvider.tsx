@@ -275,7 +275,7 @@ export function StepProvider({ data, updateData }: Props) {
               <Link className="h-3.5 w-3.5 text-zinc-500" />
               Endpoint
             </label>
-            <div className={`grid gap-2 ${provider.baseUrls.length <= 2 ? 'grid-cols-2' : 'grid-cols-2'}`}>
+            <div className="grid grid-cols-2 gap-2">
               {provider.baseUrls.map((ep) => {
                 const isActive = data.baseUrl === ep.value
                 return (

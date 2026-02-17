@@ -82,18 +82,62 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @keyframes pulse-cursor {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
 }
 
+@keyframes stream-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes stream-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+@keyframes dot-pulse {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
 .animate-fade-in {
-  animation: fade-in 0.15s ease-out;
+  animation: fade-in 0.2s ease-out;
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .animate-cursor {
-  animation: pulse-cursor 1s ease-in-out infinite;
+  animation: pulse-cursor 0.8s ease-in-out infinite;
 }
+
+/* Shimmer bar on streaming messages */
+.stream-shimmer {
+  background: linear-gradient(90deg, transparent 30%, rgba(249,115,22,0.06) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: stream-shimmer 2s ease-in-out infinite;
+}
+
+/* Pulsing border glow during stream */
+.stream-glow {
+  animation: stream-glow 2s ease-in-out infinite;
+}
+
+/* Typing dots */
+.dot-pulse span {
+  display: inline-block;
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+.dot-pulse span:nth-child(2) { animation-delay: 0.2s; }
+.dot-pulse span:nth-child(3) { animation-delay: 0.4s; }
 
 /* ── Markdown ── */
 .prose pre {

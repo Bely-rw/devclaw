@@ -75,14 +75,14 @@ export function Hooks() {
 
   if (loading) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-[var(--color-dc-darker)]">
+      <div className="flex flex-1 items-center justify-center bg-dc-darker">
         <div className="h-10 w-10 rounded-full border-4 border-orange-500/30 border-t-orange-500 animate-spin" />
       </div>
     )
   }
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden bg-[var(--color-dc-darker)]">
+    <div className="flex flex-1 flex-col overflow-hidden bg-dc-darker">
       <div className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto px-8 py-10">
         {/* Header */}
         <div className="flex items-start justify-between">
@@ -185,7 +185,7 @@ export function Hooks() {
               </div>
 
               {filteredHooks.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-zinc-700/50 bg-[var(--color-dc-dark)]/40 px-8 py-14 text-center">
+                <div className="rounded-2xl border border-dashed border-zinc-700/50 bg-dc-dark/40 px-8 py-14 text-center">
                   <Zap className="mx-auto h-10 w-10 text-zinc-700" />
                   <p className="mt-4 text-sm text-zinc-500">
                     {filterEvent
@@ -224,7 +224,7 @@ export function Hooks() {
         )}
 
         {/* Info card */}
-        <div className="mt-10 mb-6 rounded-2xl border border-white/[0.06] bg-[var(--color-dc-dark)]/60 p-6">
+        <div className="mt-10 mb-6 rounded-2xl border border-white/6 bg-dc-dark/60 p-6">
           <h3 className="text-sm font-bold text-zinc-300 mb-3">Sobre Hooks</h3>
           <p className="text-xs text-zinc-500 leading-relaxed">
             Hooks permitem que plugins, skills e o sistema observem e modifiquem o comportamento
@@ -274,8 +274,8 @@ function HookCard({
 
   return (
     <div
-      className={`rounded-2xl border bg-[var(--color-dc-dark)]/80 p-5 transition-all ${
-        hook.enabled ? 'border-white/[0.06]' : 'border-zinc-800/50 opacity-60'
+      className={`rounded-2xl border bg-dc-dark/80 p-5 transition-all ${
+        hook.enabled ? 'border-white/6' : 'border-zinc-800/50 opacity-60'
       }`}
     >
       {/* Linha superior */}
@@ -378,7 +378,7 @@ function EventCard({
   const hasHooks = event.hooks.length > 0
 
   return (
-    <div className="rounded-2xl border border-white/[0.06] bg-[var(--color-dc-dark)]/80 transition-all">
+    <div className="rounded-2xl border border-white/6 bg-dc-dark/80 transition-all">
       <button
         onClick={() => setExpanded(!expanded)}
         className="flex w-full cursor-pointer items-center justify-between px-5 py-4"

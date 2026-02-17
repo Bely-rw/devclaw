@@ -6,7 +6,7 @@ import { Terminal } from 'lucide-react'
  */
 export function SetupLayout() {
   return (
-    <div className="relative flex min-h-full items-center justify-center overflow-hidden bg-[var(--color-dc-darker)] p-6">
+    <div className="relative flex min-h-full items-center justify-center overflow-hidden bg-dc-darker p-6">
       {/* Subtle gradient background */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute -left-40 -top-40 h-[500px] w-[500px] rounded-full bg-orange-600/5 blur-[120px]" />
@@ -28,7 +28,7 @@ export function SetupLayout() {
         </div>
 
         {/* Card */}
-        <div className="rounded-2xl border border-white/[0.06] bg-[var(--color-dc-dark)]/90 p-8 shadow-2xl shadow-black/40 backdrop-blur-xl">
+        <div className="rounded-2xl border border-white/6 bg-dc-dark/90 p-8 shadow-2xl shadow-black/40 backdrop-blur-xl">
           <Outlet />
         </div>
 

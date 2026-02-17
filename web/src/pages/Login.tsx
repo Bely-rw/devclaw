@@ -32,14 +32,14 @@ export function Login() {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[var(--color-dc-darker)] p-4">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-dc-darker p-4">
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute left-1/2 top-1/3 h-[400px] w-[400px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-orange-500/8 blur-[100px]" />
       </div>
 
       <div className="relative z-10 w-full max-w-sm">
         <div className="mb-8 text-center">
-          <div className="inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-orange-500 to-amber-500 shadow-xl shadow-orange-500/20">
+          <div className="inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-linear-to-br from-orange-500 to-amber-500 shadow-xl shadow-orange-500/20">
             <svg className="h-8 w-8 text-white" viewBox="0 0 24 24" fill="currentColor">
               <ellipse cx="7" cy="5" rx="2.5" ry="3" />
               <ellipse cx="17" cy="5" rx="2.5" ry="3" />
@@ -54,8 +54,8 @@ export function Login() {
           <p className="mt-1 text-sm text-gray-500">Entre com sua senha para continuar</p>
         </div>
 
-        <div className="rounded-2xl border border-orange-500/10 bg-[var(--color-dc-dark)] p-6">
-          <div className="-mx-6 -mt-6 mb-6 h-1 rounded-t-2xl bg-gradient-to-r from-orange-500 via-amber-400 to-orange-500" />
+        <div className="rounded-2xl border border-orange-500/10 bg-dc-dark p-6">
+          <div className="-mx-6 -mt-6 mb-6 h-1 rounded-t-2xl bg-linear-to-r from-orange-500 via-amber-400 to-orange-500" />
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
@@ -70,7 +70,7 @@ export function Login() {
                 onChange={(e) => { setPassword(e.target.value); setError('') }}
                 placeholder="Sua senha da Web UI"
                 autoFocus
-                className="w-full rounded-xl border border-white/[0.08] bg-[var(--color-dc-darker)] px-4 py-3 text-sm text-white placeholder-gray-600 outline-none transition-all focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/10"
+                className="w-full rounded-xl border border-white/8 bg-dc-darker px-4 py-3 text-sm text-white placeholder:text-gray-600 outline-none transition-all focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/10"
               />
             </div>
 
@@ -83,7 +83,7 @@ export function Login() {
             <button
               type="submit"
               disabled={loading || !password}
-              className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-orange-500/20 transition-all hover:from-orange-600 hover:to-amber-600 hover:shadow-orange-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-linear-to-r from-orange-500 to-amber-500 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-orange-500/20 transition-all hover:from-orange-600 hover:to-amber-600 hover:shadow-orange-500/30 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

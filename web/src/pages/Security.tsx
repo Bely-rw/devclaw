@@ -8,14 +8,14 @@ import {
   XCircle,
   AlertTriangle,
   ChevronDown,
-  ChevronRight,
   X,
+  ExternalLink,
 } from 'lucide-react'
 import { api, type SecurityStatus, type AuditEntry, type ToolGuardStatus, type VaultStatus } from '@/lib/api'
 import { timeAgo } from '@/lib/utils'
 
 /**
- * Painel de seguranca — estilo discord-gaming dark.
+ * Painel de segurança — vault, tool guard, audit log, API keys.
  */
 export function Security() {
   const [overview, setOverview] = useState<SecurityStatus | null>(null)
@@ -30,130 +30,196 @@ export function Security() {
 
   if (loading) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-[var(--color-dc-darker)]">
-        <div className="h-8 w-8 rounded-full border-4 border-blue-500/30 border-t-blue-500 animate-spin" />
+      <div className="flex flex-1 items-center justify-center bg-dc-darker">
+        <div className="h-8 w-8 rounded-full border-4 border-orange-500/30 border-t-orange-500 animate-spin" />
       </div>
     )
   }
 
+  const vaultOk = overview?.vault_exists && overview?.vault_unlocked
+  const guardOk = overview?.tool_guard_enabled
+  const authOk = overview?.webui_auth_configured
+
   return (
-    <div className="flex-1 overflow-y-auto bg-[var(--color-dc-darker)]">
-      <div className="mx-auto max-w-4xl px-6 py-8">
+    <div className="flex-1 overflow-y-auto bg-dc-darker">
+      <div className="mx-auto max-w-3xl px-8 py-10">
         {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange-500/15">
-            <Shield className="h-5 w-5 text-orange-400" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-white tracking-tight">Seguranca</h1>
-            <p className="text-xs text-gray-500">Controle de acesso, auditoria e chaves</p>
-          </div>
+        <div>
+          <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-zinc-600">Sistema</p>
+          <h1 className="mt-1 text-2xl font-black text-white tracking-tight">Segurança</h1>
         </div>
 
-        <div className="space-y-4">
-          <AuditLogSection entryCount={overview?.audit_entry_count ?? 0} />
-          <ToolGuardSection enabled={overview?.tool_guard_enabled ?? false} />
+        {/* Quick status */}
+        <div className="mt-6 grid grid-cols-3 gap-2.5">
+          <StatusPill label="Vault" ok={!!vaultOk} text={vaultOk ? 'Desbloqueado' : 'Inativo'} />
+          <StatusPill label="Tool Guard" ok={!!guardOk} text={guardOk ? 'Ativo' : 'Desativado'} />
+          <StatusPill label="Autenticação" ok={!!authOk} text={authOk ? 'Protegido' : 'Aberto'} />
+        </div>
+
+        <div className="mt-6 space-y-3">
           <VaultSection exists={overview?.vault_exists ?? false} unlocked={overview?.vault_unlocked ?? false} />
+          <ToolGuardSection enabled={overview?.tool_guard_enabled ?? false} />
           <APIKeysSection
             gatewayConfigured={overview?.gateway_auth_configured ?? false}
             webuiConfigured={overview?.webui_auth_configured ?? false}
           />
+          <AuditLogSection entryCount={overview?.audit_entry_count ?? 0} />
         </div>
       </div>
     </div>
   )
 }
 
-/* ── Audit Log ── */
+/* ── Status Pill ── */
 
-function AuditLogSection({ entryCount }: { entryCount: number }) {
-  const [open, setOpen] = useState(false)
-  const [entries, setEntries] = useState<AuditEntry[]>([])
-  const [loading, setLoading] = useState(false)
+function StatusPill({ label, ok, text }: { label: string; ok: boolean; text: string }) {
+  return (
+    <div className={`rounded-xl px-3.5 py-2.5 ring-1 ${
+      ok ? 'bg-emerald-500/3 ring-emerald-500/15' : 'bg-zinc-800/30 ring-zinc-700/20'
+    }`}>
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">{label}</span>
+      <div className="mt-0.5 flex items-center gap-1.5">
+        <span className={`h-1.5 w-1.5 rounded-full ${ok ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+        <span className={`text-xs font-medium ${ok ? 'text-emerald-400' : 'text-zinc-500'}`}>{text}</span>
+      </div>
+    </div>
+  )
+}
 
-  const load = () => {
-    if (entries.length > 0) return
-    setLoading(true)
-    api.security.audit(100)
-      .then((data) => setEntries(data.entries ?? []))
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }
+/* ── Accordion wrapper ── */
+
+function Accordion({
+  icon,
+  iconColor,
+  title,
+  subtitle,
+  badge,
+  defaultOpen = false,
+  onOpen,
+  children,
+}: {
+  icon: React.ReactNode
+  iconColor: string
+  title: string
+  subtitle: string
+  badge?: React.ReactNode
+  defaultOpen?: boolean
+  onOpen?: () => void
+  children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen)
 
   const toggle = () => {
     const next = !open
     setOpen(next)
-    if (next) load()
+    if (next && onOpen) onOpen()
   }
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-white/[0.06] bg-[var(--color-dc-dark)]">
+    <section className="overflow-hidden rounded-2xl border border-white/6 bg-(--color-dc-dark)/80">
       <button
         onClick={toggle}
-        className="flex w-full cursor-pointer items-center justify-between px-5 py-4 text-left transition-colors hover:bg-white/[0.02]"
+        className="flex w-full cursor-pointer items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-white/2"
       >
-        <div className="flex items-center gap-4">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-orange-500/15 text-orange-400">
-            <Activity className="h-5 w-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-white">Audit Log</h3>
-            <p className="text-xs text-gray-500">
-              {entryCount > 0 ? `${entryCount} registros` : 'Historico de acoes executadas'}
-            </p>
-          </div>
+        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${iconColor}`}>
+          {icon}
         </div>
-        {open ? <ChevronDown className="h-4 w-4 text-gray-600" /> : <ChevronRight className="h-4 w-4 text-gray-600" />}
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-bold text-white">{title}</h3>
+          <p className="text-[11px] text-zinc-500">{subtitle}</p>
+        </div>
+        {badge}
+        <ChevronDown className={`h-4 w-4 shrink-0 text-zinc-600 transition-transform ${open ? '' : '-rotate-90'}`} />
       </button>
+      {open && <div className="border-t border-white/4 px-5 py-5">{children}</div>}
+    </section>
+  )
+}
 
-      {open && (
-        <div className="border-t border-white/[0.04]">
-          {loading ? (
-            <div className="flex justify-center py-8">
-              <div className="h-6 w-6 rounded-full border-2 border-orange-500/30 border-t-orange-500 animate-spin" />
-            </div>
-          ) : entries.length === 0 ? (
-            <p className="px-5 py-8 text-center text-sm text-gray-600">Nenhum registro de auditoria</p>
+/* ── Vault ── */
+
+function VaultSection({ exists, unlocked }: { exists: boolean; unlocked: boolean }) {
+  const [vault, setVault] = useState<VaultStatus | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const load = () => {
+    if (vault) return
+    setLoading(true)
+    api.security.vault()
+      .then(setVault)
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }
+
+  const statusBadge = (
+    <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ring-1 ${
+      !exists
+        ? 'bg-zinc-800/50 text-zinc-500 ring-zinc-700/30'
+        : unlocked
+        ? 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/20'
+        : 'bg-amber-500/10 text-amber-400 ring-amber-500/20'
+    }`}>
+      {!exists ? 'Inexistente' : unlocked ? 'Desbloqueado' : 'Bloqueado'}
+    </span>
+  )
+
+  return (
+    <Accordion
+      icon={<Lock className="h-4 w-4 text-violet-400" />}
+      iconColor="bg-violet-500/10"
+      title="Vault"
+      subtitle="Cofre criptografado (AES-256-GCM + Argon2id)"
+      badge={statusBadge}
+      onOpen={load}
+    >
+      {loading ? (
+        <Spinner />
+      ) : !vault || !vault.exists ? (
+        <EmptyState
+          icon={<Lock className="h-8 w-8 text-zinc-700" />}
+          title="Vault não configurado"
+          description={<>Execute <Code>devclaw config vault-init</Code> ou complete o setup wizard</>}
+        />
+      ) : !vault.unlocked ? (
+        <EmptyState
+          icon={<Lock className="h-8 w-8 text-amber-400/40" />}
+          title="Vault bloqueado"
+          description="Defina DEVCLAW_VAULT_PASSWORD no ambiente para desbloquear"
+        />
+      ) : (
+        <div>
+          {vault.keys.length === 0 ? (
+            <EmptyState
+              icon={<Key className="h-8 w-8 text-zinc-700" />}
+              title="Nenhum secret armazenado"
+              description="Adicione secrets via CLI ou chat"
+            />
           ) : (
-            <div className="max-h-[400px] overflow-y-auto">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-[var(--color-dc-dark)]">
-                  <tr className="text-left">
-                    <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-600">Ferramenta</th>
-                    <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-600">Caller</th>
-                    <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-600">Status</th>
-                    <th className="px-5 py-3 text-[10px] font-semibold uppercase tracking-wider text-gray-600">Quando</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/[0.04]">
-                  {entries.map((e) => (
-                    <tr key={e.id} className="transition-colors hover:bg-white/[0.02]">
-                      <td className="px-5 py-2.5 font-mono text-gray-300">{e.tool}</td>
-                      <td className="px-5 py-2.5 text-gray-500">{e.caller || '—'}</td>
-                      <td className="px-5 py-2.5">
-                        {e.allowed ? (
-                          <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-400 ring-1 ring-emerald-500/20">OK</span>
-                        ) : (
-                          <span className="rounded-full bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold text-red-400 ring-1 ring-red-500/20">Bloqueado</span>
-                        )}
-                      </td>
-                      <td className="px-5 py-2.5 text-gray-600">{timeAgo(e.created_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-1.5">
+              {vault.keys.map((key) => (
+                <div
+                  key={key}
+                  className="flex items-center gap-3 rounded-xl bg-zinc-800/30 px-4 py-3 ring-1 ring-zinc-700/20"
+                >
+                  <Key className="h-3.5 w-3.5 shrink-0 text-violet-400" />
+                  <span className="min-w-0 flex-1 truncate font-mono text-sm text-zinc-200">{key}</span>
+                  <span className="text-xs tracking-widest text-zinc-600">••••••••</span>
+                </div>
+              ))}
+              <p className="pt-2 text-[11px] text-zinc-600">
+                {vault.keys.length} secret{vault.keys.length !== 1 ? 's' : ''} armazenado{vault.keys.length !== 1 ? 's' : ''}. Valores nunca são exibidos.
+              </p>
             </div>
           )}
         </div>
       )}
-    </section>
+    </Accordion>
   )
 }
 
 /* ── Tool Guard ── */
 
 function ToolGuardSection({ enabled }: { enabled: boolean }) {
-  const [open, setOpen] = useState(false)
   const [guard, setGuard] = useState<ToolGuardStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -167,12 +233,6 @@ function ToolGuardSection({ enabled }: { enabled: boolean }) {
       .then(setGuard)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }
-
-  const toggle = () => {
-    const next = !open
-    setOpen(next)
-    if (next) load()
   }
 
   const save = async (partial: Partial<ToolGuardStatus>) => {
@@ -200,370 +260,333 @@ function ToolGuardSection({ enabled }: { enabled: boolean }) {
     save({ [field]: (guard[field] ?? []).filter((v) => v !== value) })
   }
 
-  return (
-    <section className="overflow-hidden rounded-2xl border border-white/[0.06] bg-[var(--color-dc-dark)]">
-      <button
-        onClick={toggle}
-        className="flex w-full cursor-pointer items-center justify-between px-5 py-4 text-left transition-colors hover:bg-white/[0.02]"
-      >
-        <div className="flex items-center gap-4">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-500/15 text-amber-400">
-            <Shield className="h-5 w-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-white">Tool Guard</h3>
-            <p className="text-xs text-gray-500">
-              {enabled ? 'Ativo — controle de permissoes' : 'Desativado'}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ring-1 ${
-            enabled
-              ? 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/20'
-              : 'bg-white/[0.05] text-gray-500 ring-white/[0.06]'
-          }`}>
-            {enabled ? 'Ativo' : 'Inativo'}
-          </span>
-          {open ? <ChevronDown className="h-4 w-4 text-gray-600" /> : <ChevronRight className="h-4 w-4 text-gray-600" />}
-        </div>
-      </button>
-
-      {open && (
-        <div className="border-t border-white/[0.04] px-5 py-5 space-y-5">
-          {loading || !guard ? (
-            <div className="flex justify-center py-6">
-              <div className="h-6 w-6 rounded-full border-2 border-blue-500/30 border-t-blue-500 animate-spin" />
-            </div>
-          ) : (
-            <>
-              {/* Toggles */}
-              <div className="grid gap-3 sm:grid-cols-3">
-                <ToggleCard
-                  label="Destrutivos"
-                  description="rm -rf, mkfs, dd..."
-                  icon={<AlertTriangle className="h-4 w-4 text-amber-400" />}
-                  enabled={guard.allow_destructive}
-                  onChange={(v) => save({ allow_destructive: v })}
-                  disabled={saving}
-                  color="amber"
-                />
-                <ToggleCard
-                  label="Sudo"
-                  description="Permitir sudo"
-                  icon={<Shield className="h-4 w-4 text-red-400" />}
-                  enabled={guard.allow_sudo}
-                  onChange={(v) => save({ allow_sudo: v })}
-                  disabled={saving}
-                  color="red"
-                />
-                <ToggleCard
-                  label="Reboot"
-                  description="shutdown, reboot"
-                  icon={<AlertTriangle className="h-4 w-4 text-red-400" />}
-                  enabled={guard.allow_reboot}
-                  onChange={(v) => save({ allow_reboot: v })}
-                  disabled={saving}
-                  color="red"
-                />
-              </div>
-
-              {/* Require Confirmation */}
-              <div>
-                <h4 className="text-[10px] font-semibold uppercase tracking-wider text-gray-600 mb-2.5">Requer confirmacao</h4>
-                <div className="flex flex-wrap gap-2">
-                  {(guard.require_confirmation ?? []).map((t) => (
-                    <span key={t} className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-3 py-1.5 font-mono text-xs text-amber-400 ring-1 ring-amber-500/20">
-                      {t}
-                      <button onClick={() => removeFromList('require_confirmation', t)} className="cursor-pointer transition-colors hover:text-red-400">
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
-                  <form
-                    className="inline-flex"
-                    onSubmit={(e) => { e.preventDefault(); addToList('require_confirmation', newConfirmTool) }}
-                  >
-                    <input
-                      value={newConfirmTool}
-                      onChange={(e) => setNewConfirmTool(e.target.value)}
-                      placeholder="+ adicionar..."
-                      className="h-8 w-32 rounded-lg border border-white/[0.08] bg-[var(--color-dc-darker)] px-3 text-xs text-white outline-none placeholder:text-gray-600 focus:border-orange-500/30"
-                    />
-                  </form>
-                </div>
-              </div>
-
-              {/* Auto Approve */}
-              <div>
-                <h4 className="text-[10px] font-semibold uppercase tracking-wider text-gray-600 mb-2.5">Auto-aprovacao</h4>
-                <div className="flex flex-wrap gap-2">
-                  {(guard.auto_approve ?? []).map((t) => (
-                    <span key={t} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-1.5 font-mono text-xs text-emerald-400 ring-1 ring-emerald-500/20">
-                      {t}
-                      <button onClick={() => removeFromList('auto_approve', t)} className="cursor-pointer transition-colors hover:text-red-400">
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
-                  <form
-                    className="inline-flex"
-                    onSubmit={(e) => { e.preventDefault(); addToList('auto_approve', newAutoTool) }}
-                  >
-                    <input
-                      value={newAutoTool}
-                      onChange={(e) => setNewAutoTool(e.target.value)}
-                      placeholder="+ adicionar..."
-                      className="h-8 w-32 rounded-lg border border-white/[0.08] bg-[var(--color-dc-darker)] px-3 text-xs text-white outline-none placeholder:text-gray-600 focus:border-orange-500/30"
-                    />
-                  </form>
-                </div>
-              </div>
-
-              {/* Protected Paths */}
-              {(guard.protected_paths ?? []).length > 0 && (
-                <div>
-                  <h4 className="text-[10px] font-semibold uppercase tracking-wider text-gray-600 mb-2.5">Paths protegidos</h4>
-                  <div className="flex flex-wrap gap-2">
-                    {guard.protected_paths.map((p) => (
-                      <span key={p} className="rounded-lg bg-white/[0.06] px-3 py-1.5 font-mono text-xs text-gray-400">
-                        {p}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      )}
-    </section>
+  const statusBadge = (
+    <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ring-1 ${
+      enabled
+        ? 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/20'
+        : 'bg-zinc-800/50 text-zinc-500 ring-zinc-700/30'
+    }`}>
+      {enabled ? 'Ativo' : 'Desativado'}
+    </span>
   )
-}
-
-/* ── Vault ── */
-
-function VaultSection({ exists, unlocked }: { exists: boolean; unlocked: boolean }) {
-  const [open, setOpen] = useState(false)
-  const [vault, setVault] = useState<VaultStatus | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  const load = () => {
-    if (vault) return
-    setLoading(true)
-    api.security.vault()
-      .then(setVault)
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }
-
-  const toggle = () => {
-    const next = !open
-    setOpen(next)
-    if (next) load()
-  }
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-white/[0.06] bg-[var(--color-dc-dark)]">
-      <button
-        onClick={toggle}
-        className="flex w-full cursor-pointer items-center justify-between px-5 py-4 text-left transition-colors hover:bg-white/[0.02]"
-      >
-        <div className="flex items-center gap-4">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-violet-500/15 text-violet-400">
-            <Lock className="h-5 w-5" />
-          </div>
+    <Accordion
+      icon={<Shield className="h-4 w-4 text-amber-400" />}
+      iconColor="bg-amber-500/10"
+      title="Tool Guard"
+      subtitle="Controle de permissões de ferramentas"
+      badge={statusBadge}
+      onOpen={load}
+    >
+      {loading || !guard ? (
+        <Spinner />
+      ) : !enabled ? (
+        <EmptyState
+          icon={<Shield className="h-8 w-8 text-zinc-700" />}
+          title="Tool Guard desativado"
+          description={<>Ative no <Code>config.yaml</Code> → <Code>security.tool_guard.enabled: true</Code></>}
+        />
+      ) : (
+        <div className="space-y-5">
+          {/* Permission toggles */}
           <div>
-            <h3 className="text-sm font-semibold text-white">Vault</h3>
-            <p className="text-xs text-gray-500">
-              {!exists ? 'Nao configurado' : unlocked ? 'Desbloqueado' : 'Bloqueado'}
-            </p>
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Permissões perigosas</p>
+            <div className="grid gap-2 sm:grid-cols-3">
+              <PermToggle
+                label="Destrutivos"
+                hint="rm -rf, mkfs, dd..."
+                enabled={guard.allow_destructive}
+                onChange={(v) => save({ allow_destructive: v })}
+                disabled={saving}
+                color="amber"
+              />
+              <PermToggle
+                label="Sudo"
+                hint="Execução privilegiada"
+                enabled={guard.allow_sudo}
+                onChange={(v) => save({ allow_sudo: v })}
+                disabled={saving}
+                color="red"
+              />
+              <PermToggle
+                label="Reboot"
+                hint="Desligar / reiniciar"
+                enabled={guard.allow_reboot}
+                onChange={(v) => save({ allow_reboot: v })}
+                disabled={saving}
+                color="red"
+              />
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-3">
-          {exists ? (
-            <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-semibold ring-1 ${
-              unlocked
-                ? 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/20'
-                : 'bg-amber-500/10 text-amber-400 ring-amber-500/20'
-            }`}>
-              {unlocked ? 'Desbloqueado' : 'Bloqueado'}
-            </span>
-          ) : (
-            <span className="rounded-full bg-white/[0.05] px-2.5 py-0.5 text-[10px] font-semibold text-gray-500 ring-1 ring-white/[0.06]">
-              Nao existe
-            </span>
-          )}
-          {open ? <ChevronDown className="h-4 w-4 text-gray-600" /> : <ChevronRight className="h-4 w-4 text-gray-600" />}
-        </div>
-      </button>
 
-      {open && (
-        <div className="border-t border-white/[0.04] px-5 py-5">
-          {loading ? (
-            <div className="flex justify-center py-6">
-              <div className="h-6 w-6 rounded-full border-2 border-blue-500/30 border-t-blue-500 animate-spin" />
-            </div>
-          ) : !vault || !vault.exists ? (
-            <div className="flex flex-col items-center py-6">
-              <Lock className="h-10 w-10 text-gray-700" />
-              <p className="mt-3 text-sm text-gray-500">Vault nao configurado</p>
-              <p className="mt-1 text-xs text-gray-600">
-                Use <code className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-gray-400">devclaw config vault-init</code> para criar
-              </p>
-            </div>
-          ) : !vault.unlocked ? (
-            <div className="flex flex-col items-center py-6">
-              <Lock className="h-10 w-10 text-amber-400/50" />
-              <p className="mt-3 text-sm text-gray-500">Vault esta bloqueado</p>
-              <p className="mt-1 text-xs text-gray-600">
-                Desbloqueie ao iniciar o servidor com a senha mestra
-              </p>
-            </div>
-          ) : (
+          {/* Tag lists side by side */}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <TagList
+              label="Requer confirmação"
+              hint="Pede aprovação antes de executar"
+              items={guard.require_confirmation ?? []}
+              color="amber"
+              onRemove={(v) => removeFromList('require_confirmation', v)}
+              inputValue={newConfirmTool}
+              onInputChange={setNewConfirmTool}
+              onAdd={(v) => addToList('require_confirmation', v)}
+            />
+
+            <TagList
+              label="Auto-aprovação"
+              hint="Sempre executar sem perguntar"
+              items={guard.auto_approve ?? []}
+              color="emerald"
+              onRemove={(v) => removeFromList('auto_approve', v)}
+              inputValue={newAutoTool}
+              onInputChange={setNewAutoTool}
+              onAdd={(v) => addToList('auto_approve', v)}
+            />
+          </div>
+
+          {(guard.protected_paths ?? []).length > 0 && (
             <div>
-              <p className="text-xs text-gray-500 mb-4">
-                Secrets armazenados (AES-256-GCM + Argon2id). Valores nao sao exibidos.
-              </p>
-              {vault.keys.length === 0 ? (
-                <p className="text-sm text-gray-600">Nenhum secret armazenado</p>
-              ) : (
-                <div className="space-y-2">
-                  {vault.keys.map((key) => (
-                    <div
-                      key={key}
-                      className="flex items-center gap-3 rounded-xl border border-white/[0.04] bg-[var(--color-dc-darker)] px-4 py-3"
-                    >
-                      <Key className="h-4 w-4 text-violet-400" />
-                      <span className="font-mono text-sm text-white">{key}</span>
-                      <span className="ml-auto text-xs text-gray-600">••••••••</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Paths protegidos</p>
+              <div className="flex flex-wrap gap-1.5">
+                {guard.protected_paths.map((p) => (
+                  <span key={p} className="rounded-lg bg-zinc-800 px-2.5 py-1 font-mono text-xs text-zinc-400 ring-1 ring-zinc-700/50">{p}</span>
+                ))}
+              </div>
             </div>
           )}
         </div>
       )}
-    </section>
+    </Accordion>
   )
 }
 
 /* ── API Keys ── */
 
 function APIKeysSection({ gatewayConfigured, webuiConfigured }: { gatewayConfigured: boolean; webuiConfigured: boolean }) {
-  const [open, setOpen] = useState(false)
-
   return (
-    <section className="overflow-hidden rounded-2xl border border-white/[0.06] bg-[var(--color-dc-dark)]">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex w-full cursor-pointer items-center justify-between px-5 py-4 text-left transition-colors hover:bg-white/[0.02]"
-      >
-        <div className="flex items-center gap-4">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-cyan-500/15 text-cyan-400">
-            <Key className="h-5 w-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-white">API Keys</h3>
-            <p className="text-xs text-gray-500">Autenticacao do gateway e web UI</p>
-          </div>
-        </div>
-        {open ? <ChevronDown className="h-4 w-4 text-gray-600" /> : <ChevronRight className="h-4 w-4 text-gray-600" />}
-      </button>
-
-      {open && (
-        <div className="border-t border-white/[0.04] px-5 py-5 space-y-3">
-          <div className="flex items-center justify-between rounded-xl border border-white/[0.04] bg-[var(--color-dc-darker)] px-5 py-4">
-            <div>
-              <p className="text-sm font-semibold text-white">Gateway Auth Token</p>
-              <p className="mt-0.5 text-xs text-gray-500">Autenticacao Bearer para a API HTTP</p>
-            </div>
-            {gatewayConfigured ? (
-              <div className="flex items-center gap-1.5 text-emerald-400">
-                <CheckCircle2 className="h-4 w-4" />
-                <span className="text-xs font-medium">Configurado</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 text-gray-600">
-                <XCircle className="h-4 w-4" />
-                <span className="text-xs">Nao configurado</span>
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between rounded-xl border border-white/[0.04] bg-[var(--color-dc-darker)] px-5 py-4">
-            <div>
-              <p className="text-sm font-semibold text-white">Web UI Auth Token</p>
-              <p className="mt-0.5 text-xs text-gray-500">Senha de acesso ao dashboard</p>
-            </div>
-            {webuiConfigured ? (
-              <div className="flex items-center gap-1.5 text-emerald-400">
-                <CheckCircle2 className="h-4 w-4" />
-                <span className="text-xs font-medium">Configurado</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 text-amber-400">
-                <AlertTriangle className="h-4 w-4" />
-                <span className="text-xs">Acesso publico</span>
-              </div>
-            )}
-          </div>
-
-          <p className="text-xs text-gray-600 pt-1">
-            Tokens configurados no <code className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-gray-400">config.yaml</code>.
-            Edite e reinicie o servidor para alterar.
-          </p>
-        </div>
-      )}
-    </section>
+    <Accordion
+      icon={<Key className="h-4 w-4 text-cyan-400" />}
+      iconColor="bg-cyan-500/10"
+      title="Autenticação"
+      subtitle="Tokens do gateway e painel web"
+    >
+      <div className="space-y-2">
+        <AuthRow label="Gateway API" hint="Bearer token para API HTTP" configured={gatewayConfigured} />
+        <AuthRow label="Web UI" hint="Senha de acesso ao painel" configured={webuiConfigured} warn={!webuiConfigured} />
+      </div>
+      <div className="mt-4 flex items-center gap-2 text-[11px] text-zinc-600">
+        <span>Altere os tokens em</span>
+        <a href="/domain" className="inline-flex items-center gap-1 text-orange-400/70 hover:text-orange-400 transition-colors">
+          Domínio & Acesso
+          <ExternalLink className="h-2.5 w-2.5" />
+        </a>
+      </div>
+    </Accordion>
   )
 }
 
-/* ── Toggle Card ── */
+function AuthRow({ label, hint, configured, warn }: { label: string; hint: string; configured: boolean; warn?: boolean }) {
+  return (
+    <div className="flex items-center justify-between rounded-xl bg-zinc-800/30 px-4 py-3 ring-1 ring-zinc-700/20">
+      <div>
+        <p className="text-sm font-medium text-zinc-200">{label}</p>
+        <p className="text-[11px] text-zinc-500">{hint}</p>
+      </div>
+      {configured ? (
+        <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-400">
+          <CheckCircle2 className="h-3.5 w-3.5" /> Configurado
+        </span>
+      ) : warn ? (
+        <span className="flex items-center gap-1.5 text-xs font-medium text-amber-400">
+          <AlertTriangle className="h-3.5 w-3.5" /> Sem proteção
+        </span>
+      ) : (
+        <span className="flex items-center gap-1.5 text-xs text-zinc-600">
+          <XCircle className="h-3.5 w-3.5" /> Não configurado
+        </span>
+      )}
+    </div>
+  )
+}
 
-function ToggleCard({
+/* ── Audit Log ── */
+
+function AuditLogSection({ entryCount }: { entryCount: number }) {
+  const [entries, setEntries] = useState<AuditEntry[]>([])
+  const [loading, setLoading] = useState(false)
+
+  const load = () => {
+    if (entries.length > 0) return
+    setLoading(true)
+    api.security.audit(100)
+      .then((data) => setEntries(data.entries ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }
+
+  return (
+    <Accordion
+      icon={<Activity className="h-4 w-4 text-orange-400" />}
+      iconColor="bg-orange-500/10"
+      title="Audit Log"
+      subtitle={entryCount > 0 ? `${entryCount} registros` : 'Histórico de ações executadas'}
+      onOpen={load}
+    >
+      {loading ? (
+        <Spinner />
+      ) : entries.length === 0 ? (
+        <div className="flex items-center gap-3 py-4">
+          <Activity className="h-5 w-5 shrink-0 text-zinc-700" />
+          <div>
+            <p className="text-sm text-zinc-400">Nenhuma ação registrada ainda</p>
+            <p className="text-[11px] text-zinc-600">O histórico aparece conforme o agente executa ferramentas</p>
+          </div>
+        </div>
+      ) : (
+        <div className="max-h-[380px] overflow-y-auto -mx-5 -mb-5">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-(--color-dc-dark)">
+              <tr>
+                <th className="px-5 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Ferramenta</th>
+                <th className="px-5 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Caller</th>
+                <th className="px-5 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Status</th>
+                <th className="px-5 py-2.5 text-right text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Quando</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/4">
+              {entries.map((e) => (
+                <tr key={e.id} className="transition-colors hover:bg-white/2">
+                  <td className="px-5 py-2.5 font-mono text-zinc-300">{e.tool}</td>
+                  <td className="px-5 py-2.5 text-zinc-500">{e.caller || '—'}</td>
+                  <td className="px-5 py-2.5">
+                    {e.allowed ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-400">
+                        <CheckCircle2 className="h-3 w-3" /> OK
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-red-400">
+                        <XCircle className="h-3 w-3" /> Bloqueado
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-5 py-2.5 text-right text-zinc-600">{timeAgo(e.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Accordion>
+  )
+}
+
+/* ── Shared components ── */
+
+function Spinner() {
+  return (
+    <div className="flex justify-center py-8">
+      <div className="h-6 w-6 rounded-full border-2 border-orange-500/30 border-t-orange-500 animate-spin" />
+    </div>
+  )
+}
+
+function EmptyState({ icon, title, description }: { icon: React.ReactNode; title: string; description: React.ReactNode }) {
+  return (
+    <div className="flex flex-col items-center py-8">
+      {icon}
+      <p className="mt-3 text-sm font-medium text-zinc-400">{title}</p>
+      <p className="mt-1 text-xs text-zinc-600 text-center max-w-xs">{description}</p>
+    </div>
+  )
+}
+
+function Code({ children }: { children: React.ReactNode }) {
+  return <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-300">{children}</code>
+}
+
+function PermToggle({
   label,
-  description,
-  icon,
+  hint,
   enabled,
   onChange,
   disabled,
   color = 'amber',
 }: {
   label: string
-  description: string
-  icon: React.ReactNode
+  hint: string
   enabled: boolean
-  onChange: (value: boolean) => void
+  onChange: (v: boolean) => void
   disabled?: boolean
   color?: 'amber' | 'red'
 }) {
-  const activeColor = color === 'red'
-    ? 'border-red-500/20 bg-red-500/[0.05]'
-    : 'border-amber-500/20 bg-amber-500/[0.05]'
-  const trackColor = color === 'red'
-    ? 'bg-red-500'
-    : 'bg-amber-500'
+  const ringActive = color === 'red' ? 'ring-red-500/20 bg-red-500/5' : 'ring-amber-500/20 bg-amber-500/5'
+  const trackActive = color === 'red' ? 'bg-red-500' : 'bg-amber-500'
 
   return (
     <button
       onClick={() => onChange(!enabled)}
       disabled={disabled}
-      className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 text-left transition-all ${
-        enabled
-          ? activeColor
-          : 'border-white/[0.06] hover:border-white/[0.1]'
+      className={`flex cursor-pointer items-center gap-3 rounded-xl px-3.5 py-3 text-left ring-1 transition-all ${
+        enabled ? ringActive : 'ring-zinc-700/20 bg-zinc-800/30 hover:ring-zinc-700/40'
       } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
     >
-      {icon}
       <div className="min-w-0 flex-1">
-        <p className="text-xs font-semibold text-white">{label}</p>
-        <p className="text-[10px] text-gray-500">{description}</p>
+        <p className="text-xs font-semibold text-zinc-200">{label}</p>
+        <p className="text-[10px] text-zinc-500">{hint}</p>
       </div>
-      <div className={`h-5 w-9 rounded-full transition-colors ${enabled ? trackColor : 'bg-white/[0.08]'}`}>
-        <div className={`mt-0.5 h-4 w-4 rounded-full bg-white transition-transform ${enabled ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+      <div className={`h-5 w-9 shrink-0 rounded-full transition-colors ${enabled ? trackActive : 'bg-zinc-700'}`}>
+        <div className={`mt-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${enabled ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
       </div>
     </button>
+  )
+}
+
+function TagList({
+  label,
+  hint,
+  items,
+  color,
+  onRemove,
+  inputValue,
+  onInputChange,
+  onAdd,
+}: {
+  label: string
+  hint?: string
+  items: string[]
+  color: 'amber' | 'emerald'
+  onRemove: (v: string) => void
+  inputValue: string
+  onInputChange: (v: string) => void
+  onAdd: (v: string) => void
+}) {
+  const tagClass = color === 'amber'
+    ? 'bg-amber-500/10 text-amber-400 ring-amber-500/20'
+    : 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/20'
+
+  return (
+    <div className="rounded-xl bg-zinc-800/20 px-4 py-3 ring-1 ring-zinc-700/15">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">{label}</p>
+      {hint && <p className="mt-0.5 text-[10px] text-zinc-600">{hint}</p>}
+      <div className="mt-2.5 flex flex-wrap gap-1.5">
+        {items.map((t) => (
+          <span key={t} className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-mono text-xs ring-1 ${tagClass}`}>
+            {t}
+            <button onClick={() => onRemove(t)} className="cursor-pointer transition-colors hover:text-red-400">
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        ))}
+        <form className="inline-flex" onSubmit={(e) => { e.preventDefault(); onAdd(inputValue) }}>
+          <input
+            value={inputValue}
+            onChange={(e) => onInputChange(e.target.value)}
+            placeholder={items.length === 0 ? 'nome_da_tool' : '+ adicionar'}
+            className="h-7 w-28 rounded-lg bg-transparent px-2 text-xs text-zinc-400 outline-none placeholder:text-zinc-600 focus:placeholder:text-zinc-500"
+          />
+        </form>
+      </div>
+    </div>
   )
 }
