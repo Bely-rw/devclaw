@@ -31,19 +31,19 @@ web-dev:
 
 ## build: Build the binary (includes frontend if dist/ exists)
 build: web-build
-	CGO_ENABLED=1 go build -tags 'sqlite_fts5' $(LDFLAGS) -o bin/copilot ./cmd/copilot
+	CGO_ENABLED=1 go build -tags 'sqlite_fts5' $(LDFLAGS) -o bin/devclaw ./cmd/devclaw
 
 ## build-go: Build only the Go binary (skip frontend)
 build-go:
-	CGO_ENABLED=1 go build -tags 'sqlite_fts5' $(LDFLAGS) -o bin/copilot ./cmd/copilot
+	CGO_ENABLED=1 go build -tags 'sqlite_fts5' $(LDFLAGS) -o bin/devclaw ./cmd/devclaw
 
 ## build-linux: Cross-compile for Linux AMD64 (for VM deploy)
 build-linux:
-	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags 'sqlite_fts5' $(LDFLAGS) -o bin/copilot-linux-amd64 ./cmd/copilot
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags 'sqlite_fts5' $(LDFLAGS) -o bin/devclaw-linux-amd64 ./cmd/devclaw
 
-## run: Build and start copilot serve
+## run: Build and start devclaw serve
 run: build
-	./bin/copilot serve $(SERVE_FLAGS)
+	./bin/devclaw serve $(SERVE_FLAGS)
 
 ## serve: Alias for run
 serve: run
@@ -56,23 +56,23 @@ dev:
 	@$(MAKE) -j2 build-go web-dev _dev-serve
 
 _dev-serve: build-go
-	./bin/copilot serve $(SERVE_FLAGS)
+	./bin/devclaw serve $(SERVE_FLAGS)
 
 ## setup: Interactive setup wizard
 setup: build-go
-	./bin/copilot setup
+	./bin/devclaw setup
 
 ## init: Create default config.yaml (non-interactive)
 init: build-go
-	./bin/copilot config init
+	./bin/devclaw config init
 
 ## validate: Validate the configuration
 validate: build-go
-	./bin/copilot config validate $(if $(CONFIG),--config $(CONFIG))
+	./bin/devclaw config validate $(if $(CONFIG),--config $(CONFIG))
 
 ## chat: Send a single message (usage: make chat MSG="hello")
 chat: build-go
-	./bin/copilot chat "$(MSG)"
+	./bin/devclaw chat "$(MSG)"
 
 ## test: Run all unit tests
 test:
@@ -92,7 +92,7 @@ clean:
 
 ## install: Install binary to GOPATH
 install: web-build
-	CGO_ENABLED=1 go install -tags 'sqlite_fts5' $(LDFLAGS) ./cmd/copilot
+	CGO_ENABLED=1 go install -tags 'sqlite_fts5' $(LDFLAGS) ./cmd/devclaw
 
 ## docker-build: Build Docker image
 docker-build:

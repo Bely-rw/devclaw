@@ -1,12 +1,11 @@
-// Package main é o ponto de entrada do CLI do AgentGo Copilot.
-// Utiliza cobra para gerenciamento de comandos.
+// Package main é o ponto de entrada do CLI do DevClaw.
 package main
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/jholhewres/devclaw/cmd/copilot/commands"
+	"github.com/jholhewres/devclaw/cmd/devclaw/commands"
 )
 
 // version é injetado em build time via ldflags.

@@ -1321,7 +1321,7 @@ func (c *LLMClient) CompleteWithToolsStream(ctx context.Context, messages []chat
 // before falling back to non-streaming.
 func (c *LLMClient) CompleteWithToolsStreamUsingModel(ctx context.Context, modelOverride string, messages []chatMessage, tools []ToolDefinition, onChunk StreamCallback) (*LLMResponse, error) {
 	if c.apiKey == "" && c.provider != "ollama" {
-		return nil, fmt.Errorf("API key not configured. Run 'copilot config set-key' or set DEVCLAW_API_KEY")
+		return nil, fmt.Errorf("API key not configured. Run 'devclaw config set-key' or set DEVCLAW_API_KEY")
 	}
 
 	model := c.model
@@ -1809,7 +1809,7 @@ func (c *LLMClient) isInCooldown(model string) bool {
 // primary model to check if it recovered. On success, cooldown is cleared.
 func (c *LLMClient) CompleteWithFallbackUsingModel(ctx context.Context, modelOverride string, messages []chatMessage, tools []ToolDefinition) (*LLMResponse, error) {
 	if c.apiKey == "" && c.provider != "ollama" {
-		return nil, fmt.Errorf("API key not configured. Run 'copilot config set-key' or set DEVCLAW_API_KEY")
+		return nil, fmt.Errorf("API key not configured. Run 'devclaw config set-key' or set DEVCLAW_API_KEY")
 	}
 
 	primary := c.model

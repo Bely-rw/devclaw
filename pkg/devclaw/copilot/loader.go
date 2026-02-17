@@ -102,10 +102,10 @@ func FindConfigFile() string {
 	candidates := []string{
 		"config.yaml",
 		"config.yml",
-		"copilot.yaml",
-		"copilot.yml",
+		"devclaw.yaml",
+		"devclaw.yml",
 		"configs/config.yaml",
-		"configs/copilot.yaml",
+		"configs/devclaw.yaml",
 	}
 
 	for _, path := range candidates {

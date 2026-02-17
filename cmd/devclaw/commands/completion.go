@@ -6,35 +6,35 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newCompletionCmd creates the `copilot completion` command that generates
+// newCompletionCmd creates the `devclaw completion` command that generates
 // shell completion scripts for bash, zsh, fish, and powershell.
 func newCompletionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "completion [bash|zsh|fish|powershell]",
 		Short: "Generate shell completion scripts",
-		Long: `Generate shell auto-completion scripts for copilot.
+		Long: `Generate shell auto-completion scripts for devclaw.
 
 To load completions:
 
 Bash:
-  $ source <(copilot completion bash)
+  $ source <(devclaw completion bash)
   # To load completions for each session, add to ~/.bashrc:
-  echo 'source <(copilot completion bash)' >> ~/.bashrc
+  echo 'source <(devclaw completion bash)' >> ~/.bashrc
 
 Zsh:
-  $ source <(copilot completion zsh)
+  $ source <(devclaw completion zsh)
   # To load completions for each session, add to ~/.zshrc:
-  echo 'source <(copilot completion zsh)' >> ~/.zshrc
+  echo 'source <(devclaw completion zsh)' >> ~/.zshrc
 
 Fish:
-  $ copilot completion fish | source
+  $ devclaw completion fish | source
   # To load completions for each session:
-  copilot completion fish > ~/.config/fish/completions/copilot.fish
+  devclaw completion fish > ~/.config/fish/completions/devclaw.fish
 
 PowerShell:
-  PS> copilot completion powershell | Out-String | Invoke-Expression
+  PS> devclaw completion powershell | Out-String | Invoke-Expression
   # To load completions for each session, add to your profile:
-  copilot completion powershell | Out-String | Invoke-Expression`,
+  devclaw completion powershell | Out-String | Invoke-Expression`,
 		DisableFlagsInUseLine: true,
 		ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
 		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),

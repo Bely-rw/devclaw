@@ -268,10 +268,10 @@ Skills extend the agent's capabilities with custom tools and behaviors.
 
 | Source | Example |
 |--------|---------|
-| ClawHub | `copilot skill install brave-search` |
-| GitHub | `copilot skill install github.com/user/repo` |
-| URL | `copilot skill install https://example.com/skill.tar.gz` |
-| Local | `copilot skill install ./my-local-skill` |
+| ClawHub | `devclaw skill install brave-search` |
+| GitHub | `devclaw skill install github.com/user/repo` |
+| URL | `devclaw skill install https://example.com/skill.tar.gz` |
+| Local | `devclaw skill install ./my-local-skill` |
 | Chat | Ask the agent to create one |
 
 ### Creation via Chat
@@ -462,15 +462,15 @@ Per-session and global tracking of consumed tokens. Accessible via `/usage` comm
 
 | Command | Description |
 |---------|-------------|
-| `copilot setup` | Interactive wizard (TUI) |
-| `copilot serve` | Start daemon |
-| `copilot chat [msg]` | Interactive REPL or single message |
-| `copilot config init/show/validate` | Config management |
-| `copilot config vault-*` | Vault management |
-| `copilot skill list/search/install` | Skills management |
-| `copilot schedule list/add` | Cron management |
-| `copilot health` | Health check |
-| `copilot changelog` | Version changelog |
+| `devclaw setup` | Interactive wizard (TUI) |
+| `devclaw serve` | Start daemon |
+| `devclaw chat [msg]` | Interactive REPL or single message |
+| `devclaw config init/show/validate` | Config management |
+| `devclaw config vault-*` | Vault management |
+| `devclaw skill list/search/install` | Skills management |
+| `devclaw schedule list/add` | Cron management |
+| `devclaw health` | Health check |
+| `devclaw changelog` | Version changelog |
 
 ### Chat Commands (via messaging or CLI REPL)
 
@@ -501,18 +501,18 @@ Per-session and global tracking of consumed tokens. Accessible via `/usage` comm
 
 ```bash
 docker compose up -d
-docker compose logs -f copilot
+docker compose logs -f devclaw
 ```
 
 ### systemd
 
 ```bash
-sudo cp copilot.service /etc/systemd/system/
-sudo systemctl enable --now copilot
+sudo cp devclaw.service /etc/systemd/system/
+sudo systemctl enable --now devclaw
 ```
 
 ### Binary
 
 ```bash
-make build && ./bin/copilot serve
+make build && ./bin/devclaw serve
 ```

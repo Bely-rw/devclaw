@@ -16,7 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newSkillCmd creates the `copilot skill` command for managing skills.
+// newSkillCmd creates the `devclaw skill` command for managing skills.
 func newSkillCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skill",
@@ -25,18 +25,18 @@ func newSkillCmd() *cobra.Command {
 GitHub, URLs, or local paths.
 
 Sources:
-  copilot skill install steipete/trello              # ClawHub slug
-  copilot skill install https://clawhub.ai/user/skill # ClawHub URL
-  copilot skill install https://github.com/user/repo  # GitHub repo
-  copilot skill install https://example.com/skill.zip  # URL (zip or SKILL.md)
-  copilot skill install ./my-local-skill               # Local path
+  devclaw skill install steipete/trello              # ClawHub slug
+  devclaw skill install https://clawhub.ai/user/skill # ClawHub URL
+  devclaw skill install https://github.com/user/repo  # GitHub repo
+  devclaw skill install https://example.com/skill.zip  # URL (zip or SKILL.md)
+  devclaw skill install ./my-local-skill               # Local path
 
 Other:
-  copilot skill list                                   # List installed skills
-  copilot skill search calendar                        # Search ClawHub
-  copilot skill info <name>                            # Show skill details
-  copilot skill remove <name>                          # Remove a skill
-  copilot skill update --all                           # Update all GitHub skills`,
+  devclaw skill list                                   # List installed skills
+  devclaw skill search calendar                        # Search ClawHub
+  devclaw skill info <name>                            # Show skill details
+  devclaw skill remove <name>                          # Remove a skill
+  devclaw skill update --all                           # Update all GitHub skills`,
 	}
 
 	cmd.AddCommand(

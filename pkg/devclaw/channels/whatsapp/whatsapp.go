@@ -38,7 +38,7 @@ type Config struct {
 	// SessionDir is the directory for session persistence (SQLite).
 	SessionDir string `yaml:"session_dir"`
 
-	// Trigger is the keyword that activates the bot (e.g. "@copilot").
+	// Trigger is the keyword that activates the bot (e.g. "@devclaw").
 	Trigger string `yaml:"trigger"`
 
 	// RespondToGroups enables responding in group chats.
@@ -64,7 +64,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		SessionDir:      "./sessions/whatsapp",
-		Trigger:         "@copilot",
+		Trigger:         "@devclaw",
 		RespondToGroups: true,
 		RespondToDMs:    true,
 		AutoRead:        true,

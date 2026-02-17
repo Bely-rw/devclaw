@@ -1,4 +1,4 @@
-// Package commands implementa os comandos CLI do AgentGo Copilot usando cobra.
+// Package commands implementa os comandos CLI do DevClaw usando cobra.
 package commands
 
 import (
@@ -8,16 +8,16 @@ import (
 // NewRootCmd cria o comando raiz do CLI com todos os subcomandos registrados.
 func NewRootCmd(version string) *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "copilot",
-		Short: "AgentGo Copilot - Personal Assistant",
-		Long: `AgentGo Copilot é um assistente pessoal open-source em Go.
-Funciona como CLI e serviço de mensagens (WhatsApp, Discord, Telegram).
+		Use:   "devclaw",
+		Short: "DevClaw - AI Agent for Tech Teams",
+		Long: `DevClaw is an open-source AI agent for tech teams.
+Works as CLI, daemon service, and messaging channels (WhatsApp, Discord, Telegram).
 
-Exemplos:
-  copilot chat "O que tenho na agenda hoje?"
-  copilot serve --channel whatsapp
-  copilot schedule list
-  copilot skill search calendar`,
+Examples:
+  devclaw chat "What time is it?"
+  devclaw serve --channel whatsapp
+  devclaw schedule list
+  devclaw skill search calendar`,
 		Version: version,
 	}
 

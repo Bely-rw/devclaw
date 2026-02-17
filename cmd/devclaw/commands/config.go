@@ -12,17 +12,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// newConfigCmd creates the `copilot config` command.
+// newConfigCmd creates the `devclaw config` command.
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
 		Short: "Manage assistant configuration",
-		Long: `Manage DevClaw Copilot configuration.
+		Long: `Manage DevClaw configuration.
 
 Examples:
-  copilot config init
-  copilot config show
-  copilot config validate`,
+  devclaw config init
+  devclaw config show
+  devclaw config validate`,
 	}
 
 	cmd.AddCommand(
@@ -62,7 +62,7 @@ func newConfigInitCmd() *cobra.Command {
 			fmt.Printf("Created %s with default configuration.\n", target)
 			fmt.Println("\nNext steps:")
 			fmt.Println("  1. Edit config.yaml and set your phone number in access.owners")
-			fmt.Println("  2. Run: copilot serve")
+			fmt.Println("  2. Run: devclaw serve")
 			fmt.Println("  3. Scan the QR code with WhatsApp")
 			return nil
 		},
@@ -139,7 +139,7 @@ macOS:   Keychain
 Windows: Credential Manager
 
 Examples:
-  copilot config set-key`,
+  devclaw config set-key`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if !copilot.KeyringAvailable() {
 				fmt.Println("OS keyring is not available on this system.")
@@ -247,7 +247,7 @@ func newConfigKeyStatusCmd() *cobra.Command {
 			}
 
 			fmt.Println()
-			fmt.Println("Recommendation: use 'copilot config vault-init' + 'vault-set' for maximum security.")
+			fmt.Println("Recommendation: use 'devclaw config vault-init' + 'vault-set' for maximum security.")
 			fmt.Println("The encrypted vault is the only method that protects against filesystem access.")
 
 			return nil
@@ -276,7 +276,7 @@ Even with filesystem access, secrets cannot be read without the password.
 The password is NEVER stored — it exists only in your memory.
 
 Examples:
-  copilot config vault-init`,
+  devclaw config vault-init`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			vault := copilot.NewVault(copilot.VaultFile)
 
@@ -314,7 +314,7 @@ Examples:
 			fmt.Println()
 			fmt.Println("Encrypted vault created at .devclaw.vault")
 			fmt.Println()
-			fmt.Println("Next: store your API key with 'copilot config vault-set'")
+			fmt.Println("Next: store your API key with 'devclaw config vault-set'")
 
 			return nil
 		},
@@ -333,12 +333,12 @@ After storing, you can safely delete the .env file:
   rm .env
 
 Examples:
-  copilot config vault-set`,
+  devclaw config vault-set`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			vault := copilot.NewVault(copilot.VaultFile)
 
 			if !vault.Exists() {
-				return fmt.Errorf("no vault found. Run 'copilot config vault-init' first")
+				return fmt.Errorf("no vault found. Run 'devclaw config vault-init' first")
 			}
 
 			// Unlock vault.
@@ -383,7 +383,7 @@ Examples:
 			fmt.Println()
 			fmt.Println("You can now safely remove plaintext copies:")
 			fmt.Println("  rm .env                          # delete .env file")
-			fmt.Println("  copilot config delete-key        # remove from OS keyring")
+			fmt.Println("  devclaw config delete-key        # remove from OS keyring")
 			fmt.Println()
 			fmt.Println("On startup, DevClaw will ask for your master password to decrypt.")
 
@@ -406,7 +406,7 @@ func newVaultStatusCmd() *cobra.Command {
 			if !vault.Exists() {
 				fmt.Println("  Status: NOT CREATED")
 				fmt.Println()
-				fmt.Println("  Run 'copilot config vault-init' to create one.")
+				fmt.Println("  Run 'devclaw config vault-init' to create one.")
 				return nil
 			}
 
@@ -437,7 +437,7 @@ func newVaultStatusCmd() *cobra.Command {
 
 			if len(keys) == 0 {
 				fmt.Println("  No secrets stored yet.")
-				fmt.Println("  Run 'copilot config vault-set' to add your API key.")
+				fmt.Println("  Run 'devclaw config vault-set' to add your API key.")
 			} else {
 				fmt.Printf("  Stored keys (%d):\n", len(keys))
 				for _, k := range keys {
@@ -466,12 +466,12 @@ func newVaultChangePasswordCmd() *cobra.Command {
 Requires the current password to unlock first.
 
 Examples:
-  copilot config vault-change-password`,
+  devclaw config vault-change-password`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			vault := copilot.NewVault(copilot.VaultFile)
 
 			if !vault.Exists() {
-				return fmt.Errorf("no vault found. Run 'copilot config vault-init' first")
+				return fmt.Errorf("no vault found. Run 'devclaw config vault-init' first")
 			}
 
 			// Unlock with current password.
@@ -525,7 +525,7 @@ func loadConfig(cmd *cobra.Command) (*copilot.Config, string, error) {
 	}
 
 	if configPath == "" {
-		return nil, "", fmt.Errorf("no config file found.\nRun 'copilot config init' to create one, or use --config <path>")
+		return nil, "", fmt.Errorf("no config file found.\nRun 'devclaw config init' to create one, or use --config <path>")
 	}
 
 	cfg, err := copilot.LoadConfigFromFile(configPath)

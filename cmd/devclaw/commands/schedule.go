@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newScheduleCmd cria o comando `copilot schedule` para gerenciar tarefas agendadas.
+// newScheduleCmd cria o comando `devclaw schedule` para gerenciar tarefas agendadas.
 func newScheduleCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "schedule",
@@ -15,9 +15,9 @@ func newScheduleCmd() *cobra.Command {
 remover e listar tarefas que serão executadas automaticamente.
 
 Exemplos:
-  copilot schedule list
-  copilot schedule add "every weekday 9am" "Send me a daily briefing" --channel whatsapp
-  copilot schedule remove <id>`,
+  devclaw schedule list
+  devclaw schedule add "every weekday 9am" "Send me a daily briefing" --channel whatsapp
+  devclaw schedule remove <id>`,
 	}
 
 	cmd.AddCommand(

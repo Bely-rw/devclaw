@@ -1,4 +1,4 @@
-// Package commands – changelog.go implements the `copilot changelog` CLI command
+// Package commands – changelog.go implements the `devclaw changelog` CLI command
 // that displays the changelog for the current version.
 package commands
 

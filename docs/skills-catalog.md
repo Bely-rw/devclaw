@@ -284,7 +284,7 @@ metadata:
     os: [darwin, linux]   # Supported platforms
 ```
 
-Skills with unmet requirements are silently skipped. Use `copilot skill list --all` to see skipped skills and their missing dependencies.
+Skills with unmet requirements are silently skipped. Use `devclaw skill list --all` to see skipped skills and their missing dependencies.
 
 ---
 
@@ -293,7 +293,7 @@ Skills with unmet requirements are silently skipped. Use `copilot skill list --a
 ### Native Go skill
 
 ```bash
-copilot skill create my-skill --category productivity
+devclaw skill create my-skill --category productivity
 ```
 
 This scaffolds:

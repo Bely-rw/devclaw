@@ -347,7 +347,7 @@ metadata: %s
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("ClawHub results for %q (%d found):\n\n", query, len(result.Skills)))
 			for _, s := range result.Skills {
-				sb.WriteString(fmt.Sprintf("- **%s** (%s)\n  %s\n  Stars: %d | Downloads: %d\n  Install: `copilot skill install %s` or ask me to install it\n\n",
+				sb.WriteString(fmt.Sprintf("- **%s** (%s)\n  %s\n  Stars: %d | Downloads: %d\n  Install: `devclaw skill install %s` or ask me to install it\n\n",
 					s.Name, s.Slug, s.Description, s.Stars, s.Downloads, s.Slug))
 			}
 			return sb.String(), nil

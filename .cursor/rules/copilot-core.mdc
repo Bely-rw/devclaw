@@ -1,5 +1,5 @@
 ---
-description: Core copilot package patterns and architecture
+description: Core package patterns and architecture
 globs: ["pkg/devclaw/copilot/**/*.go"]
 alwaysApply: true
 ---

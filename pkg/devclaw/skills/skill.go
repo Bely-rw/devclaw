@@ -1,4 +1,4 @@
-// Package skills define o sistema de extensibilidade do AgentGo Copilot.
+// Package skills define o sistema de extensibilidade do DevClaw.
 // Skills são módulos que adicionam capacidades ao assistente, como integração
 // com calendário, email, GitHub, etc. Podem ser built-in ou instaladas pela comunidade.
 package skills

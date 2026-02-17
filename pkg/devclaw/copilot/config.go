@@ -19,7 +19,7 @@ type Config struct {
 	// Name is the assistant name shown in responses.
 	Name string `yaml:"name"`
 
-	// Trigger is the keyword that activates the bot (e.g. "@copilot").
+	// Trigger is the keyword that activates the bot (e.g. "@devclaw").
 	Trigger string `yaml:"trigger"`
 
 	// Model is the LLM model to use (e.g. "glm-4.7-flash").
@@ -442,8 +442,8 @@ type LoggingConfig struct {
 // DefaultConfig returns the default assistant configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		Name:    "Copilot",
-		Trigger: "@copilot",
+		Name:    "DevClaw",
+		Trigger: "@devclaw",
 		Model:   "gpt-5-mini",
 		API: APIConfig{
 			BaseURL: "https://api.openai.com/v1",

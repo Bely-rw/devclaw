@@ -21,18 +21,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newServeCmd creates the `copilot serve` command that starts the daemon.
+// newServeCmd creates the `devclaw serve` command that starts the daemon.
 func newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the daemon with messaging channels",
-		Long: `Start DevClaw Copilot as a daemon service, connecting to enabled
+		Long: `Start DevClaw as a daemon service, connecting to enabled
 channels (WhatsApp, Discord, Telegram) and processing messages.
 
 Examples:
-  copilot serve
-  copilot serve --channel whatsapp
-  copilot serve --config ./config.yaml`,
+  devclaw serve
+  devclaw serve --channel whatsapp
+  devclaw serve --config ./config.yaml`,
 		RunE: runServe,
 	}
 

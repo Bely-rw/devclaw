@@ -8,7 +8,7 @@ DevClaw is an AI assistant framework written in Go. Single binary, zero runtime 
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                      cmd/copilot                        │
+│                      cmd/devclaw                        │
 │              CLI (Cobra) — setup, serve, chat            │
 └────────────────────────┬────────────────────────────────┘
                          │

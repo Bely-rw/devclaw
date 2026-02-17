@@ -1,4 +1,4 @@
-// Package security implementa os guardrails de segurança do AgentGo Copilot.
+// Package security implementa os guardrails de segurança do DevClaw.
 // Inclui validação de input (injection, rate limit, PII), validação de output
 // (URLs, fatos, PII) e políticas de segurança para execução de tools.
 package security

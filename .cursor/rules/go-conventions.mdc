@@ -8,7 +8,7 @@ alwaysApply: true
 
 ## Project Structure
 
-- CLI: `cmd/copilot/commands/` — cobra commands
+- CLI: `cmd/devclaw/commands/` — cobra commands
 - Core: `pkg/devclaw/copilot/` — assistant, agent, tools, sessions
 - Channels: `pkg/devclaw/channels/` — WhatsApp, Discord, Telegram
 - Gateway: `pkg/devclaw/gateway/` — HTTP API + WebSocket
@@ -71,7 +71,7 @@ alwaysApply: true
 
 ## Deploy
 
-- Cross-compile: `GOOS=linux GOARCH=amd64 go build -o devclaw-linux-amd64 ./cmd/copilot`
+- Cross-compile: `GOOS=linux GOARCH=amd64 go build -o devclaw-linux-amd64 ./cmd/devclaw`
 - Upload: `gcloud compute scp` to `openclaw-gateway` (zone: `southamerica-east1-a`)
 - Process manager: PM2 (`pm2 stop devclaw && cp ... && pm2 start devclaw`)
 

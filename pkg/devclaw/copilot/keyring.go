@@ -127,7 +127,7 @@ func ResolveAPIKey(cfg *Config, logger *slog.Logger) *Vault {
 		return nil
 	}
 
-	logger.Warn("no API key found. Set one with: copilot config set-key or copilot config vault-set")
+	logger.Warn("no API key found. Set one with: devclaw config set-key or devclaw config vault-set")
 	return nil
 }
 

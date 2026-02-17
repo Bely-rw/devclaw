@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newChatCmd creates the `copilot chat` command for interactive CLI conversations.
+// newChatCmd creates the `devclaw chat` command for interactive CLI conversations.
 func newChatCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "chat [message]",
@@ -34,8 +34,8 @@ Interactive features:
   Tab         — autocomplete commands
 
 Examples:
-  copilot chat "What time is it?"
-  copilot chat                      # interactive mode`,
+  devclaw chat "What time is it?"
+  devclaw chat                      # interactive mode`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runChat,
 	}

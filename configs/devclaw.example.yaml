@@ -1,12 +1,12 @@
 # ─────────────────────────────────────────────────────────────
-# DevClaw Copilot - Configuration
+# DevClaw - Configuration
 # Copy to config.yaml and adjust as needed:
-#   cp configs/copilot.example.yaml config.yaml
+#   cp configs/devclaw.example.yaml config.yaml
 # ─────────────────────────────────────────────────────────────
 
 # ── Assistant ──────────────────────────────────────────────
-name: "Copilot"
-trigger: "@copilot"                    # Keyword that activates the bot
+name: "DevClaw"
+trigger: "@devclaw"                    # Keyword that activates the bot
 model: "gpt-5-mini"                    # LLM model (see options below)
 timezone: "America/Sao_Paulo"
 language: "pt-BR"
@@ -88,7 +88,7 @@ workspaces:
 channels:
   whatsapp:
     session_dir: "./sessions/whatsapp"
-    trigger: "@copilot"
+    trigger: "@devclaw"
     respond_to_groups: true
     respond_to_dms: true
     auto_read: true
