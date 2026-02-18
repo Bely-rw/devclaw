@@ -39,6 +39,17 @@ export function Security() {
     )
   }
 
+  if (loadError) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center bg-dc-darker">
+        <p className="text-sm text-red-400">Erro ao carregar dados de segurança</p>
+        <button onClick={() => window.location.reload()} className="mt-3 text-xs text-orange-400 hover:text-orange-300 transition-colors">
+          Tentar novamente
+        </button>
+      </div>
+    )
+  }
+
   const vaultOk = overview?.vault_exists && overview?.vault_unlocked
   const guardOk = overview?.tool_guard_enabled
   const authOk = overview?.webui_auth_configured
