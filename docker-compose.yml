@@ -6,6 +6,7 @@ services:
     volumes:
       - devclaw-state:/home/devclaw
       - ./skills:/home/devclaw/skills
+      - ./workspace:/home/devclaw/workspace
     environment:
       - TZ=America/Sao_Paulo
     ports:
