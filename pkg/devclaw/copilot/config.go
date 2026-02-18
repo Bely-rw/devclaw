@@ -3,6 +3,8 @@
 package copilot
 
 import (
+	"strings"
+
 	"github.com/jholhewres/devclaw/pkg/devclaw/channels/discord"
 	"github.com/jholhewres/devclaw/pkg/devclaw/channels/slack"
 	"github.com/jholhewres/devclaw/pkg/devclaw/channels/telegram"
@@ -226,6 +228,34 @@ func (m MediaConfig) Effective() MediaConfig {
 		out.TranscriptionModel = "whisper-1"
 	}
 	return out
+}
+
+// ResolveForProvider fills in transcription defaults based on the main API
+// provider so users don't have to configure transcription separately when
+// their provider already supports it.
+func (m *MediaConfig) ResolveForProvider(provider, baseURL string) {
+	if m.TranscriptionBaseURL != "" {
+		return
+	}
+	switch {
+	case provider == "openai" || provider == "openrouter":
+		// OpenAI natively supports /audio/transcriptions
+	case isZAIProvider(provider, baseURL):
+		m.TranscriptionBaseURL = "https://api.z.ai/api/paas/v4"
+		if m.TranscriptionModel == "whisper-1" {
+			m.TranscriptionModel = "glm-asr-2512"
+		}
+	case provider == "groq":
+		m.TranscriptionBaseURL = "https://api.groq.com/openai/v1"
+		if m.TranscriptionModel == "whisper-1" {
+			m.TranscriptionModel = "whisper-large-v3"
+		}
+	}
+}
+
+func isZAIProvider(provider, baseURL string) bool {
+	return strings.Contains(baseURL, "z.ai") || strings.Contains(baseURL, "zhipu") ||
+		strings.HasPrefix(provider, "zai") || strings.HasPrefix(provider, "zhipu")
 }
 
 // FallbackConfig configures model fallback and retry behavior.

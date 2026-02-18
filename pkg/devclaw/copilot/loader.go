@@ -58,6 +58,12 @@ func ParseConfig(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("mapping config: %w", err)
 	}
 
+	// If "media" section is absent in YAML, bool fields get zeroed by unmarshal.
+	// Restore defaults so vision/transcription are enabled out of the box.
+	if _, hasMedia := raw["media"]; !hasMedia {
+		cfg.Media = DefaultMediaConfig()
+	}
+
 	return cfg, nil
 }
 

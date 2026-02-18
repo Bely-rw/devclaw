@@ -275,6 +275,9 @@ func (a *Assistant) Start(ctx context.Context) error {
 		a.injectVaultEnvVars()
 	}
 
+	// 0pre-b. Auto-resolve media transcription provider from main API config.
+	a.config.Media.ResolveForProvider(a.config.API.Provider, a.config.API.BaseURL)
+
 	// 0. Initialize memory stores.
 	memDir := filepath.Join(filepath.Dir(a.config.Memory.Path), "memory")
 	memStore, err := memory.NewFileStore(memDir)
