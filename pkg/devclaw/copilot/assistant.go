@@ -361,22 +361,30 @@ func (a *Assistant) Start(ctx context.Context) error {
 	}
 
 	// 0c-1. Session persistence: prefer SQLite, fall back to JSONL.
+	var sessPersister SessionPersister
 	if a.devclawDB != nil {
-		sessPersist := NewSQLiteSessionPersistence(a.devclawDB, a.logger.With("component", "session-persist"))
-		a.sessionStore.SetPersistence(sessPersist)
+		sessPersister = NewSQLiteSessionPersistence(a.devclawDB, a.logger.With("component", "session-persist"))
+		a.sessionStore.SetPersistence(sessPersister)
 		a.logger.Info("session persistence enabled (SQLite)")
 	} else {
 		sessDir := filepath.Join(filepath.Dir(a.config.Memory.Path), "sessions")
 		if sessDir == "" {
 			sessDir = "./data/sessions"
 		}
-		sessPersist, err := NewSessionPersistence(sessDir, a.logger.With("component", "session-persist"))
+		sp, err := NewSessionPersistence(sessDir, a.logger.With("component", "session-persist"))
 		if err != nil {
 			a.logger.Warn("session persistence not available", "error", err)
 		} else {
-			a.sessionStore.SetPersistence(sessPersist)
+			sessPersister = sp
+			a.sessionStore.SetPersistence(sessPersister)
 			a.logger.Info("session persistence enabled (JSONL)", "dir", sessDir)
 		}
+	}
+
+	// Propagate persistence to workspace session stores so channel conversations
+	// (WhatsApp, Telegram, etc.) survive container restarts.
+	if sessPersister != nil && a.workspaceMgr != nil {
+		a.workspaceMgr.SetPersistence(sessPersister)
 	}
 
 	// 0c-2. Audit logger: prefer SQLite, fall back to file-based.

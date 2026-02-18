@@ -129,6 +129,9 @@ type WorkspaceManager struct {
 	// sessions stores isolated SessionStores per workspace.
 	sessions map[string]*SessionStore
 
+	// persistence is propagated to all workspace session stores.
+	persistence SessionPersister
+
 	// defaultWSID is the fallback workspace ID.
 	defaultWSID string
 
@@ -190,6 +193,18 @@ func NewWorkspaceManager(globalCfg *Config, wsCfg WorkspaceConfig, logger *slog.
 	return wm
 }
 
+// SetPersistence propagates a SessionPersister to all workspace session stores
+// and stores it for newly created workspaces.
+func (wm *WorkspaceManager) SetPersistence(p SessionPersister) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	wm.persistence = p
+	for _, store := range wm.sessions {
+		store.SetPersistence(p)
+	}
+}
+
 // ResolvedWorkspace contains the resolved workspace and session for a message.
 type ResolvedWorkspace struct {
 	// Workspace is the resolved workspace.
@@ -219,8 +234,10 @@ func (wm *WorkspaceManager) Resolve(channel, chatID, senderJID string, isGroup b
 
 	store := wm.sessions[wsID]
 	if store == nil {
-		// Should never happen, but be safe.
 		store = NewSessionStore(wm.logger)
+		if wm.persistence != nil {
+			store.SetPersistence(wm.persistence)
+		}
 		wm.sessions[wsID] = store
 	}
 
@@ -310,9 +327,11 @@ func (wm *WorkspaceManager) Create(ws Workspace, createdBy string) error {
 	ws.Active = true
 
 	wm.workspaces[ws.ID] = &ws
-	wm.sessions[ws.ID] = NewSessionStore(
-		wm.logger.With("workspace", ws.ID),
-	)
+	store := NewSessionStore(wm.logger.With("workspace", ws.ID))
+	if wm.persistence != nil {
+		store.SetPersistence(wm.persistence)
+	}
+	wm.sessions[ws.ID] = store
 
 	// Map members.
 	for _, jid := range ws.Members {
