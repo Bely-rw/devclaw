@@ -2037,11 +2037,12 @@ func (a *Assistant) enrichMessageContentFast(msg *channels.IncomingMessage, logg
 		if !media.VisionEnabled {
 			return msg.Content, false
 		}
-		placeholder := "[Analyzing image... results will follow]"
-		if msg.Content != "" {
-			return fmt.Sprintf("%s\n\n%s", msg.Content, placeholder), true
+		// Run vision inline so the agent sees the description before responding.
+		enriched := a.enrichMessageContent(a.ctx, msg, logger)
+		if enriched != msg.Content {
+			return enriched, false
 		}
-		return placeholder, true
+		return msg.Content, false
 
 	case channels.MessageAudio:
 		if !media.TranscriptionEnabled {
@@ -2057,21 +2058,21 @@ func (a *Assistant) enrichMessageContentFast(msg *channels.IncomingMessage, logg
 		return msg.Content, false
 
 	case channels.MessageDocument:
-		placeholder := "[Reading document... results will follow]"
-		if msg.Content != "" {
-			return fmt.Sprintf("%s\n\n%s", msg.Content, placeholder), true
+		enriched := a.enrichMessageContent(a.ctx, msg, logger)
+		if enriched != msg.Content {
+			return enriched, false
 		}
-		return placeholder, true
+		return msg.Content, false
 
 	case channels.MessageVideo:
 		if !media.VisionEnabled {
 			return msg.Content, false
 		}
-		placeholder := "[Analyzing video... results will follow]"
-		if msg.Content != "" {
-			return fmt.Sprintf("%s\n\n%s", msg.Content, placeholder), true
+		enriched := a.enrichMessageContent(a.ctx, msg, logger)
+		if enriched != msg.Content {
+			return enriched, false
 		}
-		return placeholder, true
+		return msg.Content, false
 	}
 
 	return msg.Content, false
