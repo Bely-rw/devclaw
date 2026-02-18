@@ -16,13 +16,15 @@ export function Login() {
 
     try {
       const { token } = await api.auth.login(password)
+      setPassword('')
       if (token) {
         localStorage.setItem('devclaw_token', token)
       }
       navigate('/')
     } catch (err) {
       if (err instanceof Error) {
-        setError(err.message.includes('401') ? 'Senha incorreta' : err.message)
+        const msg = err.message
+        setError(msg.includes('401') || msg.includes('Unauthorized') ? 'Senha incorreta' : msg)
       } else {
         setError('Erro ao fazer login')
       }
@@ -51,7 +53,7 @@ export function Login() {
           <h1 className="mt-4 text-2xl font-black tracking-tight text-white">
             Dev<span className="text-orange-400">Claw</span>
           </h1>
-          <p className="mt-1 text-sm text-gray-500">Entre com sua senha para continuar</p>
+          <p className="mt-1 text-sm text-zinc-500">Entre com sua senha para continuar</p>
         </div>
 
         <div className="rounded-2xl border border-orange-500/10 bg-dc-dark p-6">
@@ -59,7 +61,7 @@ export function Login() {
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label htmlFor="password" className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+              <label htmlFor="password" className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
                 <Lock className="h-3 w-3" />
                 Senha
               </label>
@@ -70,7 +72,7 @@ export function Login() {
                 onChange={(e) => { setPassword(e.target.value); setError('') }}
                 placeholder="Sua senha da Web UI"
                 autoFocus
-                className="w-full rounded-xl border border-white/8 bg-dc-darker px-4 py-3 text-sm text-white placeholder:text-gray-600 outline-none transition-all focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/10"
+                className="w-full rounded-xl border border-white/8 bg-dc-darker px-4 py-3 text-sm text-white placeholder:text-zinc-600 outline-none transition-all focus:border-orange-500/40 focus:ring-2 focus:ring-orange-500/10"
               />
             </div>
 

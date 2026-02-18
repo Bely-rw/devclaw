@@ -10,6 +10,8 @@ export function Config() {
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
+  const [loadError, setLoadError] = useState(false)
+
   useEffect(() => {
     api.config.get()
       .then((data) => {
@@ -18,7 +20,7 @@ export function Config() {
         setRawText(text)
         setOriginalText(text)
       })
-      .catch(() => {})
+      .catch(() => setLoadError(true))
       .finally(() => setLoading(false))
   }, [])
 
@@ -56,21 +58,32 @@ export function Config() {
     )
   }
 
+  if (loadError) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center bg-dc-darker">
+        <p className="text-sm text-red-400">Erro ao carregar configuração</p>
+        <button onClick={() => window.location.reload()} className="mt-3 text-xs text-orange-400 hover:text-orange-300 transition-colors">
+          Tentar novamente
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden bg-dc-darker">
       <div className="mx-auto w-full max-w-5xl flex-1 overflow-y-auto px-8 py-10">
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600">Sistema</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-zinc-600">Sistema</p>
             <h1 className="mt-1 text-2xl font-black text-white tracking-tight">Configuração</h1>
-            <p className="mt-2 text-base text-gray-500">Edite a configuração do assistente</p>
+            <p className="mt-2 text-base text-zinc-500">Edite a configuração do assistente</p>
           </div>
           <div className="flex items-center gap-3">
             {hasChanges && (
               <button
                 onClick={handleReset}
-                className="flex cursor-pointer items-center gap-2 rounded-xl border border-white/8 bg-dc-dark px-5 py-3 text-sm font-semibold text-gray-400 transition-all hover:border-white/12 hover:text-white"
+                className="flex cursor-pointer items-center gap-2 rounded-xl border border-white/8 bg-dc-dark px-5 py-3 text-sm font-semibold text-zinc-400 transition-all hover:border-white/12 hover:text-white"
               >
                 <RotateCcw className="h-4 w-4" />
                 Desfazer
@@ -101,7 +114,7 @@ export function Config() {
         {/* Editor */}
         <div className="mt-8 overflow-hidden rounded-2xl border border-white/6">
           <div className="flex items-center justify-between border-b border-white/6 bg-dc-dark px-6 py-3">
-            <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600">config.json</span>
+            <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-zinc-600">config.json</span>
             {hasChanges && (
               <span className="rounded-full bg-orange-500/15 px-3 py-1 text-[10px] font-bold text-orange-400 ring-1 ring-orange-500/20">
                 Modificado
@@ -111,7 +124,7 @@ export function Config() {
           <textarea
             value={rawText}
             onChange={(e) => setRawText(e.target.value)}
-            className="w-full resize-none bg-dc-darker p-6 font-mono text-sm leading-relaxed text-gray-300 outline-none"
+            className="w-full resize-none bg-dc-darker p-6 font-mono text-sm leading-relaxed text-zinc-300 outline-none"
             rows={Math.max(20, rawText.split('\n').length + 2)}
             spellCheck={false}
           />
@@ -120,7 +133,7 @@ export function Config() {
         {/* Sections preview */}
         {config && !hasChanges && (
           <div className="mt-8">
-            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600 mb-4">Seções</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-zinc-600 mb-4">Seções</p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {Object.keys(config).map((key) => (
                 <div
@@ -128,10 +141,10 @@ export function Config() {
                   className="rounded-2xl border border-white/6 bg-dc-dark px-5 py-4"
                 >
                   <span className="text-base font-bold text-white">{key}</span>
-                  <p className="mt-1 text-sm text-gray-500">
-                    {typeof config[key] === 'object'
+                  <p className="mt-1 text-sm text-zinc-500">
+                    {config[key] != null && typeof config[key] === 'object'
                       ? `${Object.keys(config[key] as object).length} campos`
-                      : String(config[key])}
+                      : String(config[key] ?? '')}
                   </p>
                 </div>
               ))}

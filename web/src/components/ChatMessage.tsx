@@ -138,9 +138,13 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
   const lang = className?.replace('language-', '') || ''
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      /* clipboard not available */
+    }
   }
 
   return (
@@ -148,7 +152,7 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
       {lang && (
         <div className="flex items-center justify-between rounded-t-xl border border-b-0 border-zinc-700/30 bg-zinc-800/60 px-4 py-2.5">
           <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">{lang}</span>
-          <button onClick={handleCopy} className="cursor-pointer text-zinc-600 transition-colors hover:text-zinc-300">
+          <button onClick={handleCopy} aria-label="Copiar código" className="cursor-pointer text-zinc-600 transition-colors hover:text-zinc-300">
             {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
           </button>
         </div>
@@ -164,6 +168,7 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
       {!lang && (
         <button
           onClick={handleCopy}
+          aria-label="Copiar código"
           className="absolute right-3 top-3 cursor-pointer rounded-lg p-1.5 text-zinc-600 opacity-0 transition-all hover:bg-zinc-800 hover:text-zinc-300 group-hover:opacity-100"
         >
           {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}

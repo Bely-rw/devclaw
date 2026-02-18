@@ -66,7 +66,7 @@ export function ChatInput({
           <button
             onClick={() => onAbort?.()}
             className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-xl bg-red-500/15 text-red-400 ring-1 ring-red-500/20 transition-all hover:bg-red-500/25"
-            title="Parar geração"
+            aria-label="Parar geração"
           >
             <Square className="h-4 w-4" fill="currentColor" />
           </button>
@@ -80,7 +80,7 @@ export function ChatInput({
                 ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20 hover:bg-orange-400'
                 : 'bg-zinc-800 text-zinc-600',
             )}
-            title="Enviar"
+            aria-label="Enviar mensagem"
           >
             <ArrowUp className="h-4.5 w-4.5" />
           </button>

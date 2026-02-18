@@ -103,10 +103,14 @@ export function Webhooks() {
   }
 
   /** Copia ID do webhook para clipboard */
-  const copyId = (id: string) => {
-    navigator.clipboard.writeText(id)
-    setCopiedId(id)
-    setTimeout(() => setCopiedId(null), 2000)
+  const copyId = async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id)
+      setCopiedId(id)
+      setTimeout(() => setCopiedId(null), 2000)
+    } catch {
+      /* clipboard not available */
+    }
   }
 
   if (loading) {
@@ -123,11 +127,11 @@ export function Webhooks() {
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600">
+            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-zinc-600">
               Integrações
             </p>
             <h1 className="mt-1 text-2xl font-black text-white tracking-tight">Webhooks</h1>
-            <p className="mt-2 text-base text-gray-500">
+            <p className="mt-2 text-base text-zinc-500">
               Receba notificações quando eventos acontecem no DevClaw
             </p>
           </div>

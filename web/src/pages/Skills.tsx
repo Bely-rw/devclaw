@@ -17,10 +17,12 @@ export function Skills() {
   const [loading, setLoading] = useState(true)
   const [showInstall, setShowInstall] = useState(false)
 
+  const [loadError, setLoadError] = useState(false)
+
   useEffect(() => {
     api.skills.list()
       .then(setSkills)
-      .catch(() => {})
+      .catch(() => setLoadError(true))
       .finally(() => setLoading(false))
   }, [])
 
@@ -41,7 +43,7 @@ export function Skills() {
 
   const handleInstalled = (name: string) => {
     if (!skills.find((s) => s.name === name)) {
-      setSkills((prev) => [...prev, { name, description: 'Recem instalada', enabled: false, tool_count: 0 }])
+      setSkills((prev) => [...prev, { name, description: 'Recém instalada', enabled: false, tool_count: 0 }])
     }
   }
 
@@ -61,10 +63,10 @@ export function Skills() {
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600">Gerenciar</p>
+            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-zinc-600">Gerenciar</p>
             <h1 className="mt-1 text-2xl font-black text-white tracking-tight">Skills</h1>
-            <p className="mt-2 text-base text-gray-500">
-              {enabledCount} ativas de {skills.length} disponiveis
+            <p className="mt-2 text-base text-zinc-500">
+              {enabledCount} ativas de {skills.length} disponíveis
             </p>
           </div>
           <button
@@ -78,12 +80,12 @@ export function Skills() {
 
         {/* Search */}
         <div className="relative mt-6">
-          <Search className="absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-600" />
+          <Search className="absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-zinc-600" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar skills..."
-            className="w-full rounded-2xl border border-white/8 bg-dc-dark px-5 py-4 pl-14 text-base text-white outline-none placeholder:text-gray-600 transition-all focus:border-orange-500/30 focus:ring-2 focus:ring-orange-500/10"
+            className="w-full rounded-2xl border border-white/8 bg-dc-dark px-5 py-4 pl-14 text-base text-white outline-none placeholder:text-zinc-600 transition-all focus:border-orange-500/30 focus:ring-2 focus:ring-orange-500/10"
           />
         </div>
 
@@ -104,25 +106,26 @@ export function Skills() {
                 </div>
               )}
 
-              <div className={`flex h-14 w-14 items-center justify-center rounded-xl ${
-                skill.enabled ? 'bg-orange-500/15 text-orange-400' : 'bg-white/5 text-gray-500 group-hover:text-orange-400'
+                <div className={`flex h-14 w-14 items-center justify-center rounded-xl ${
+                skill.enabled ? 'bg-orange-500/15 text-orange-400' : 'bg-white/5 text-zinc-500 group-hover:text-orange-400'
               } transition-colors`}>
                 <Package className="h-7 w-7" />
               </div>
 
               <h3 className="mt-4 text-lg font-bold text-white">{skill.name}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-gray-400 line-clamp-2">{skill.description}</p>
+              <p className="mt-2 text-sm leading-relaxed text-zinc-400 line-clamp-2">{skill.description}</p>
 
               <div className="mt-4 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="flex items-center gap-1.5 rounded-full bg-white/4 px-3 py-1 text-xs font-semibold text-gray-500">
+                  <span className="flex items-center gap-1.5 rounded-full bg-white/4 px-3 py-1 text-xs font-semibold text-zinc-500">
                     <Wrench className="h-3 w-3" />
                     {skill.tool_count} ferramentas
                   </span>
                 </div>
                 <button
                   onClick={() => handleToggle(skill.name, skill.enabled)}
-                  className="cursor-pointer text-gray-500 transition-colors hover:text-white"
+                  aria-label={skill.enabled ? `Desativar ${skill.name}` : `Ativar ${skill.name}`}
+                  className="cursor-pointer text-zinc-500 transition-colors hover:text-white"
                 >
                   {skill.enabled ? (
                     <ToggleRight className="h-7 w-7 text-orange-400" />
@@ -138,10 +141,10 @@ export function Skills() {
         {filtered.length === 0 && (
           <div className="mt-20 flex flex-col items-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/4">
-              <Zap className="h-8 w-8 text-gray-700" />
+              <Zap className="h-8 w-8 text-zinc-700" />
             </div>
-            <p className="mt-4 text-lg font-semibold text-gray-500">
-              {search ? 'Nenhuma skill encontrada' : 'Nenhuma skill disponivel'}
+            <p className="mt-4 text-lg font-semibold text-zinc-500">
+              {search ? 'Nenhuma skill encontrada' : 'Nenhuma skill disponível'}
             </p>
           </div>
         )}
@@ -228,7 +231,7 @@ function InstallModal({ onClose, onInstalled }: { onClose: () => void; onInstall
     : filtered
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose} onKeyDown={(e) => e.key === 'Escape' && onClose()}>
       <div
         className="relative w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-2xl border border-white/8 bg-dc-dark shadow-2xl"
         onClick={(e) => e.stopPropagation()}

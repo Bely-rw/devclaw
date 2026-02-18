@@ -46,7 +46,10 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     if (token) headers['Authorization'] = `Bearer ${token}`
 
     fetch('/api/auth/status', { headers })
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        return res.json()
+      })
       .then((data) => {
         setState({
           loading: false,

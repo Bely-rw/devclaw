@@ -90,7 +90,10 @@ export function WhatsAppConnect() {
       es.close()
     })
 
-    es.onerror = () => {}
+    es.onerror = () => {
+      setState('error')
+      setMessage('Conexão SSE perdida. Tente novamente.')
+    }
   }, [])
 
   useEffect(() => {

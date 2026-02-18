@@ -87,13 +87,13 @@ export function Hooks() {
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-gray-600">
+            <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-zinc-600">
               Sistema
             </p>
             <h1 className="mt-1 text-2xl font-black text-white tracking-tight">
               Hooks do Ciclo de Vida
             </h1>
-            <p className="mt-2 text-base text-gray-500">
+            <p className="mt-2 text-base text-zinc-500">
               {hooks.length} hook{hooks.length !== 1 ? 's' : ''} registrado{hooks.length !== 1 ? 's' : ''},
               {' '}{activeCount} ativo{activeCount !== 1 ? 's' : ''}
             </p>
@@ -146,6 +146,7 @@ export function Hooks() {
                 <select
                   value={filterEvent}
                   onChange={(e) => setFilterEvent(e.target.value)}
+                  aria-label="Filtrar por evento"
                   className="h-9 cursor-pointer rounded-lg border border-zinc-700/50 bg-zinc-800/50 px-3 text-xs text-zinc-300 outline-none transition-all focus:border-orange-500/50"
                 >
                   <option value="">Todos os eventos</option>
@@ -381,6 +382,7 @@ function EventCard({
     <div className="rounded-2xl border border-white/6 bg-dc-dark/80 transition-all">
       <button
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
         className="flex w-full cursor-pointer items-center justify-between px-5 py-4"
       >
         <div className="flex items-center gap-3">

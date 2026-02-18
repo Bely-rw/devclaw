@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   Shield,
   Key,
@@ -21,10 +22,12 @@ export function Security() {
   const [overview, setOverview] = useState<SecurityStatus | null>(null)
   const [loading, setLoading] = useState(true)
 
+  const [loadError, setLoadError] = useState(false)
+
   useEffect(() => {
     api.security.overview()
       .then(setOverview)
-      .catch(() => {})
+      .catch(() => setLoadError(true))
       .finally(() => setLoading(false))
   }, [])
 
@@ -119,6 +122,7 @@ function Accordion({
     <section className="overflow-hidden rounded-2xl border border-white/6 bg-(--color-dc-dark)/80">
       <button
         onClick={toggle}
+        aria-expanded={open}
         className="flex w-full cursor-pointer items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-white/2"
       >
         <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${iconColor}`}>
@@ -377,10 +381,10 @@ function APIKeysSection({ gatewayConfigured, webuiConfigured }: { gatewayConfigu
       </div>
       <div className="mt-4 flex items-center gap-2 text-[11px] text-zinc-600">
         <span>Altere os tokens em</span>
-        <a href="/domain" className="inline-flex items-center gap-1 text-orange-400/70 hover:text-orange-400 transition-colors">
+        <Link to="/domain" className="inline-flex items-center gap-1 text-orange-400/70 hover:text-orange-400 transition-colors">
           Domínio & Acesso
           <ExternalLink className="h-2.5 w-2.5" />
-        </a>
+        </Link>
       </div>
     </Accordion>
   )

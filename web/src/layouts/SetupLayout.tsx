@@ -2,7 +2,7 @@ import { Outlet } from 'react-router-dom'
 import { Terminal } from 'lucide-react'
 
 /**
- * Layout do setup wizard — clean dark design with subtle accent.
+ * Setup wizard layout — clean dark design with subtle accent.
  */
 export function SetupLayout() {
   return (
@@ -24,7 +24,7 @@ export function SetupLayout() {
           <h1 className="mt-4 text-2xl font-bold text-white">
             Dev<span className="text-orange-400">Claw</span>
           </h1>
-          <p className="mt-1.5 text-sm text-gray-500">Configure your AI agent</p>
+          <p className="mt-1.5 text-sm text-zinc-500">Configure your AI agent</p>
         </div>
 
         {/* Card */}
@@ -32,7 +32,7 @@ export function SetupLayout() {
           <Outlet />
         </div>
 
-        <p className="mt-6 text-center text-xs text-gray-600">
+        <p className="mt-6 text-center text-xs text-zinc-600">
           DevClaw &mdash; AI Agent for Tech Teams
         </p>
       </div>

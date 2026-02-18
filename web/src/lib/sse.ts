@@ -115,7 +115,6 @@ export interface POSTSSEOptions {
   body: Record<string, unknown>
   onEvent: (event: SSEEvent) => void
   onError?: (error: Error) => void
-  signal?: AbortSignal
 }
 
 /**

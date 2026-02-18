@@ -38,9 +38,9 @@ const COLOR_MAP = {
     dot: 'bg-emerald-400',
   },
   blue: {
-    active: 'border-orange-500/50 bg-orange-500/10 ring-1 ring-orange-500/20',
-    icon: 'text-orange-400',
-    dot: 'bg-orange-400',
+    active: 'border-blue-500/50 bg-blue-500/10 ring-1 ring-blue-500/20',
+    icon: 'text-blue-400',
+    dot: 'bg-blue-400',
   },
   amber: {
     active: 'border-amber-500/50 bg-amber-500/10 ring-1 ring-amber-500/20',
@@ -52,8 +52,7 @@ const COLOR_MAP = {
 export function StepSecurity({ data, updateData }: Props) {
   const [showPassword, setShowPassword] = useState(false)
   const [showVault, setShowVault] = useState(false)
-
-  const useCustomVault = data.vaultPassword !== '' && data.vaultPassword !== data.webuiPassword
+  const [customVaultEnabled, setCustomVaultEnabled] = useState(false)
 
   return (
     <div className="space-y-6">
@@ -76,10 +75,11 @@ export function StepSecurity({ data, updateData }: Props) {
               type={showPassword ? 'text' : 'password'}
               value={data.webuiPassword}
               onChange={(e) => {
-                updateData({ webuiPassword: e.target.value })
-                if (!useCustomVault) {
-                  updateData({ vaultPassword: e.target.value })
-                }
+                const val = e.target.value
+                updateData({
+                  webuiPassword: val,
+                  ...(!customVaultEnabled ? { vaultPassword: val } : {}),
+                })
               }}
               placeholder="Set a password for the dashboard"
               className="flex h-11 w-full rounded-xl border border-zinc-700/50 bg-zinc-800/50 px-4 pr-10 text-sm text-white placeholder:text-zinc-600 outline-none transition-all focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10"
@@ -87,6 +87,7 @@ export function StepSecurity({ data, updateData }: Props) {
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
             >
               {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -112,25 +113,26 @@ export function StepSecurity({ data, updateData }: Props) {
               <div className="mt-3 flex items-center gap-2">
                 <button
                   type="button"
+                  aria-label="Use a different password for the vault"
                   onClick={() => {
-                    if (useCustomVault) {
+                    const next = !customVaultEnabled
+                    setCustomVaultEnabled(next)
+                    if (!next) {
                       updateData({ vaultPassword: data.webuiPassword })
-                    } else {
-                      updateData({ vaultPassword: '' })
                     }
                   }}
                   className={`relative h-5 w-9 rounded-full transition-colors ${
-                    useCustomVault ? 'bg-orange-500' : 'bg-zinc-700'
+                    customVaultEnabled ? 'bg-orange-500' : 'bg-zinc-700'
                   }`}
                 >
                   <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                    useCustomVault ? 'translate-x-4' : 'translate-x-0.5'
+                    customVaultEnabled ? 'translate-x-4' : 'translate-x-0.5'
                   }`} />
                 </button>
                 <span className="text-xs text-zinc-400">Use a different password for the vault</span>
               </div>
 
-              {useCustomVault && (
+              {customVaultEnabled && (
                 <div className="mt-3">
                   <div className="relative">
                     <input
@@ -143,6 +145,7 @@ export function StepSecurity({ data, updateData }: Props) {
                     <button
                       type="button"
                       onClick={() => setShowVault(!showVault)}
+                      aria-label={showVault ? 'Hide vault password' : 'Show vault password'}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 transition-colors"
                     >
                       {showVault ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}

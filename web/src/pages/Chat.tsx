@@ -77,7 +77,7 @@ export function Chat() {
         ) : (
           <div className="mx-auto max-w-3xl space-y-1 px-6 py-8">
             {messages.map((msg, i) => (
-              <ChatMessage key={i} role={msg.role} content={msg.content} toolName={msg.tool_name} toolInput={msg.tool_input} />
+              <ChatMessage key={`${msg.role}-${msg.timestamp}-${i}`} role={msg.role} content={msg.content} toolName={msg.tool_name} toolInput={msg.tool_input} />
             ))}
             {streamingContent && (
               <ChatMessage role="assistant" content={streamingContent} isStreaming />

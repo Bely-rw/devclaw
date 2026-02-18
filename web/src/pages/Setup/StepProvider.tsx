@@ -212,8 +212,8 @@ export function StepProvider({ data, updateData }: Props) {
     try {
       const result = await api.setup.testProvider(data.provider, data.apiKey, data.model, data.baseUrl)
       setTestResult(result)
-    } catch {
-      setTestResult({ success: false, error: 'Connection test failed' })
+    } catch (err) {
+      setTestResult({ success: false, error: err instanceof Error ? err.message : 'Connection test failed' })
     } finally {
       setTesting(false)
     }
@@ -350,8 +350,8 @@ export function StepProvider({ data, updateData }: Props) {
               className="flex h-11 w-full cursor-pointer rounded-xl border border-zinc-700/50 bg-zinc-800/50 px-4 text-sm text-white outline-none transition-all focus:border-orange-500/50 focus:ring-2 focus:ring-orange-500/10"
             >
               <option value="">Select a model</option>
-              {provider && activeEndpoint?.extraModels && (
-                <optgroup label="GLM (Z.Ai)">
+              {activeEndpoint?.extraModels && activeEndpoint.extraModels.length > 0 && (
+                <optgroup label={activeEndpoint.label}>
                   {activeEndpoint.extraModels.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}

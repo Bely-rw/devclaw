@@ -55,13 +55,18 @@ function applyTheme(theme: Theme) {
   }
 }
 
-// Apply on load
 if (typeof window !== 'undefined') {
-  const stored = JSON.parse(localStorage.getItem('devclaw-ui') || '{}')
-  applyTheme(stored?.state?.theme || 'system')
+  try {
+    const stored = JSON.parse(localStorage.getItem('devclaw-ui') || '{}')
+    applyTheme(stored?.state?.theme || 'system')
+  } catch {
+    applyTheme('system')
+  }
 
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  const mql = window.matchMedia('(prefers-color-scheme: dark)')
+  const handler = () => {
     const current = useAppStore.getState().theme
     if (current === 'system') applyTheme('system')
-  })
+  }
+  mql.addEventListener('change', handler)
 }

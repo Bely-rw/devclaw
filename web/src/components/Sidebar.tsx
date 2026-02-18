@@ -15,11 +15,6 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/app'
-import type { SessionInfo } from '@/lib/api'
-
-interface SidebarProps {
-  sessions: SessionInfo[]
-}
 
 /** Navigation grouped by purpose: Control (daily operations) and Config (settings). */
 const controlLinks = [
@@ -38,7 +33,7 @@ const configLinks = [
   { to: '/security', icon: Shield, label: 'Segurança & Vault' },
 ]
 
-export function Sidebar({ sessions: _sessions }: SidebarProps) {
+export function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const { sidebarOpen, toggleSidebar } = useAppStore()
@@ -62,8 +57,8 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
         </button>
         <button
           onClick={toggleSidebar}
-          title="Fechar sidebar"
-          className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-white/6 hover:text-gray-300"
+          aria-label="Fechar sidebar"
+          className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-white/6 hover:text-zinc-300"
         >
           <PanelLeftClose className="h-4.5 w-4.5" />
         </button>
@@ -71,7 +66,7 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
 
       {/* Control section */}
       <nav className="flex-1 overflow-y-auto px-3 pb-3">
-        <p className="mb-1.5 px-2 text-[11px] font-semibold uppercase tracking-wider text-gray-600">
+        <p className="mb-1.5 px-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
           Controle
         </p>
         {controlLinks.map(({ to, icon: Icon, label }) => {
@@ -84,7 +79,7 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
                 'flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all',
                 isActive
                   ? 'bg-orange-500/10 text-orange-400'
-                  : 'text-gray-400 hover:bg-white/4 hover:text-gray-200',
+                  : 'text-zinc-400 hover:bg-white/4 hover:text-zinc-200',
               )}
             >
               <Icon className="h-4.5 w-4.5" />
@@ -93,11 +88,11 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
           )
         })}
 
-        <p className="mb-1.5 mt-6 px-2 text-[11px] font-semibold uppercase tracking-wider text-gray-600">
+        <p className="mb-1.5 mt-6 px-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-600">
           Configuração
         </p>
         {configLinks.map(({ to, icon: Icon, label }) => {
-          const isActive = location.pathname === to
+          const isActive = location.pathname === to || location.pathname.startsWith(to + '/')
           return (
             <button
               key={to}
@@ -106,7 +101,7 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
                 'flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all',
                 isActive
                   ? 'bg-orange-500/10 text-orange-400'
-                  : 'text-gray-400 hover:bg-white/4 hover:text-gray-200',
+                  : 'text-zinc-400 hover:bg-white/4 hover:text-zinc-200',
               )}
             >
               <Icon className="h-4.5 w-4.5" />
@@ -130,10 +125,10 @@ export function Sidebar({ sessions: _sessions }: SidebarProps) {
       {/* Footer */}
       <div className="border-t border-white/6 px-4 py-3">
         <div className="flex items-center justify-between">
-          <p className="text-xs text-gray-600">DevClaw v1.6.0</p>
+          <p className="text-xs text-zinc-600">DevClaw v1.6.0</p>
           <div className="flex items-center gap-1.5">
             <div className="h-2 w-2 rounded-full bg-emerald-400" />
-            <span className="text-[11px] text-gray-500">online</span>
+            <span className="text-[11px] text-zinc-500">online</span>
           </div>
         </div>
       </div>

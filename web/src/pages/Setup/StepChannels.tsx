@@ -59,8 +59,8 @@ const COLOR_MAP: Record<string, { active: string; icon: string }> = {
     icon: 'text-emerald-400',
   },
   blue: {
-    active: 'border-orange-500/50 bg-orange-500/5 ring-1 ring-orange-500/20',
-    icon: 'text-orange-400',
+    active: 'border-blue-500/50 bg-blue-500/5 ring-1 ring-blue-500/20',
+    icon: 'text-blue-400',
   },
   violet: {
     active: 'border-violet-500/50 bg-violet-500/5 ring-1 ring-violet-500/20',
