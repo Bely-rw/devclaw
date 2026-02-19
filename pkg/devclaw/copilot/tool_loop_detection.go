@@ -72,7 +72,8 @@ type LoopDetectionResult struct {
 type toolCallEntry struct {
 	hash     string
 	name     string
-	progress bool // whether this call made progress (output changed from previous)
+	progress bool   // whether this call made progress (output changed from previous)
+	errorMsg string // last error message for this call (for strategy detection)
 }
 
 // knownNoProgressTools are tools that frequently poll external state without
@@ -83,12 +84,14 @@ var knownNoProgressTools = map[string]map[string]bool{
 
 // ToolLoopDetector tracks tool call history and detects loops.
 type ToolLoopDetector struct {
-	config            ToolLoopConfig
-	history           []toolCallEntry
-	noProgressCount   int // total calls without progress across all tools
-	lastOutputHash    string
-	warningBucket     map[string]int // tool → warning count (coalesce repeated warnings)
-	logger            *slog.Logger
+	config          ToolLoopConfig
+	history         []toolCallEntry
+	noProgressCount int // total calls without progress across all tools
+	lastOutputHash  string
+	lastErrorMsg    string         // last error message seen
+	sameErrorCount  int            // consecutive calls with same error
+	warningBucket   map[string]int // tool → warning count (coalesce repeated warnings)
+	logger          *slog.Logger
 }
 
 // NewToolLoopDetector creates a new detector with the given config.
@@ -137,12 +140,53 @@ func (d *ToolLoopDetector) RecordToolOutcome(output string) {
 		d.noProgressCount = 0
 	}
 
-	// Update the last history entry's progress flag before changing lastOutputHash.
+	// Track repeated errors (same error = stuck strategy).
+	errorMsg := extractErrorMessage(output)
+	if errorMsg != "" {
+		if errorMsg == d.lastErrorMsg {
+			d.sameErrorCount++
+		} else {
+			d.sameErrorCount = 1 // First occurrence of this error
+			d.lastErrorMsg = errorMsg
+		}
+	}
+	// Don't reset counter on success - we want to catch alternating error/success patterns too
+
+	// Update the last history entry's progress flag and error before changing hashes.
 	if len(d.history) > 0 {
 		d.history[len(d.history)-1].progress = madeProgress
+		d.history[len(d.history)-1].errorMsg = errorMsg
 	}
 
 	d.lastOutputHash = h
+}
+
+// extractErrorMessage extracts a normalized error message from tool output.
+// Returns empty string if no error detected.
+func extractErrorMessage(output string) string {
+	lower := strings.ToLower(output)
+
+	// Common error patterns
+	patterns := []string{
+		"error:", "failed", "cannot", "not found", "404", "500",
+		"exception:", "panic:", "fatal:", "errno", "enoent",
+	}
+
+	for _, pattern := range patterns {
+		if strings.Contains(lower, pattern) {
+			// Extract first 100 chars after the error marker for comparison
+			idx := strings.Index(lower, pattern)
+			if idx >= 0 {
+				end := idx + 100
+				if end > len(output) {
+					end = len(output)
+				}
+				return strings.TrimSpace(output[idx:end])
+			}
+		}
+	}
+
+	return ""
 }
 
 // RecordAndCheck records a tool call and checks for loops.
@@ -173,6 +217,24 @@ func (d *ToolLoopDetector) RecordAndCheck(toolName string, args map[string]any) 
 				d.noProgressCount),
 			Streak:  d.noProgressCount,
 			Pattern: "global_breaker",
+		}
+	}
+
+	// 1b. Strategy loop detection: same error repeated = stuck strategy.
+	// This catches cases where the agent tries different tools but gets the same error,
+	// indicating a fundamental misunderstanding of the problem.
+	if d.sameErrorCount >= 5 {
+		d.logger.Warn("strategy loop detected (same error repeated)",
+			"tool", toolName, "same_error_count", d.sameErrorCount, "error", d.lastErrorMsg)
+		return LoopDetectionResult{
+			Severity: LoopCritical,
+			Message: fmt.Sprintf(
+				"STRATEGY LOOP DETECTED: You've gotten the same error %d times with different approaches. "+
+					"This means your understanding of the problem is incorrect. STOP and investigate: "+
+					"read documentation, check architecture, verify assumptions. Error: %s",
+				d.sameErrorCount, truncateStr(d.lastErrorMsg, 100)),
+			Streak:  d.sameErrorCount,
+			Pattern: "strategy_loop",
 		}
 	}
 
@@ -261,6 +323,8 @@ func (d *ToolLoopDetector) Reset() {
 	d.history = d.history[:0]
 	d.noProgressCount = 0
 	d.lastOutputHash = ""
+	d.lastErrorMsg = ""
+	d.sameErrorCount = 0
 	d.warningBucket = make(map[string]int)
 }
 

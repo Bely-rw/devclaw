@@ -290,3 +290,91 @@ func TestHashToolCall_DifferentArgs(t *testing.T) {
 		t.Error("different args should produce different hashes")
 	}
 }
+
+func TestToolLoopDetector_StrategyLoop(t *testing.T) {
+	t.Parallel()
+	d := newTestDetector(ToolLoopConfig{
+		Enabled:                 true,
+		HistorySize:             30,
+		WarningThreshold:        8,
+		CriticalThreshold:       15,
+		CircuitBreakerThreshold: 25,
+	})
+
+	// Simulate agent trying different tools but getting the same error.
+	// This indicates a stuck strategy (wrong understanding of the problem).
+	sameError := "Error: Cannot GET /api/route - 404 Not Found"
+
+	// Try bash (attempt 1)
+	d.RecordAndCheck("bash", map[string]any{"command": "curl http://localhost:3000/api/route"})
+	d.RecordToolOutcome(sameError)
+
+	// Try read_file (attempt 2)
+	d.RecordAndCheck("read_file", map[string]any{"path": "dist/routes.js"})
+	d.RecordToolOutcome(sameError)
+
+	// Try bash again - rebuild (attempt 3)
+	d.RecordAndCheck("bash", map[string]any{"command": "npm run build"})
+	d.RecordToolOutcome(sameError)
+
+	// Try bash - restart (attempt 4)
+	d.RecordAndCheck("bash", map[string]any{"command": "pm2 restart app"})
+	d.RecordToolOutcome(sameError)
+
+	// Try bash - test again (attempt 5)
+	d.RecordAndCheck("bash", map[string]any{"command": "curl http://localhost:3000/api/route"})
+	d.RecordToolOutcome(sameError)
+
+	// Now sameErrorCount should be 5, next RecordAndCheck should trigger
+	r := d.RecordAndCheck("bash", map[string]any{"command": "curl -v http://localhost:3000/api/route"})
+
+	if r.Severity != LoopCritical {
+		t.Errorf("expected LoopCritical for strategy loop, got %d (sameErrorCount=%d)", r.Severity, d.sameErrorCount)
+	}
+	if r.Pattern != "strategy_loop" {
+		t.Errorf("expected pattern 'strategy_loop', got %q", r.Pattern)
+	}
+}
+
+func TestExtractErrorMessage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+		want   bool // true if error should be detected
+	}{
+		{
+			name:   "404 error",
+			output: "HTTP/1.1 404 Not Found\nContent-Type: text/html",
+			want:   true,
+		},
+		{
+			name:   "error prefix",
+			output: "Error: ENOENT: no such file or directory",
+			want:   true,
+		},
+		{
+			name:   "failed prefix",
+			output: "Failed to connect to localhost:3000",
+			want:   true,
+		},
+		{
+			name:   "success output",
+			output: "Build completed successfully\nOutput: dist/",
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractErrorMessage(tt.output)
+			if tt.want && got == "" {
+				t.Errorf("expected error to be detected in %q", tt.output)
+			}
+			if !tt.want && got != "" {
+				t.Errorf("expected no error, but got %q from %q", got, tt.output)
+			}
+		})
+	}
+}

@@ -32,7 +32,8 @@ const (
 	DefaultLLMCallTimeout = 5 * time.Minute
 
 	// reflectionInterval is how often (in turns) the agent receives a budget nudge.
-	reflectionInterval = 15
+	// Reduced from 15 to 5 to catch stuck patterns earlier.
+	reflectionInterval = 5
 
 	// DefaultMaxCompactionAttempts is how many times to retry after context overflow compaction.
 	DefaultMaxCompactionAttempts = 3
@@ -89,7 +90,7 @@ type AgentRun struct {
 	reflectionOn          bool
 	maxCompactionAttempts int
 	streamCallback        StreamCallback
-	modelOverride         string   // When set, use this model instead of default.
+	modelOverride         string                             // When set, use this model instead of default.
 	usageRecorder         func(model string, usage LLMUsage) // Called after each successful LLM response.
 
 	// interruptCh receives follow-up user messages that should be injected into
@@ -312,13 +313,16 @@ func (a *AgentRun) RunWithUsage(ctx context.Context, systemPrompt string, histor
 		}
 
 		// Inject reflection nudge periodically so the agent is aware of duration.
+		// More aggressive messaging to catch stuck patterns early.
 		if a.reflectionOn && totalTurns > 1 && totalTurns%reflectionInterval == 0 {
 			elapsed := time.Since(runStart).Seconds()
 			remaining := a.runTimeout.Seconds() - elapsed
 			messages = append(messages, chatMessage{
 				Role: "user",
 				Content: fmt.Sprintf(
-					"[System: %d turns completed, %.0fs elapsed, ~%.0fs remaining. Plan efficiently.]",
+					"[System: Turn %d checkpoint (%.0fs elapsed, ~%.0fs remaining). "+
+						"If you're stuck or repeating the same approach, STOP and investigate the root cause. "+
+						"Don't repeat failed approaches — think before acting.]",
 					totalTurns, elapsed, remaining,
 				),
 			})
@@ -800,9 +804,9 @@ func isRecoverableToolError(errMsg string) bool {
 		"no such file",   // fs errors
 		"does not exist", // resource not found
 		"permission denied",
-		"timed out",      // transient timeout
+		"timed out", // transient timeout
 		"connection refused",
-		"empty",          // "command is empty"
+		"empty", // "command is empty"
 	}
 	for _, p := range patterns {
 		if strings.Contains(lower, p) {
@@ -951,9 +955,9 @@ func (a *AgentRun) truncateToolResults(messages []chatMessage, maxLen int) []cha
 // truncated or removed to keep the context lean without waiting for overflow.
 func (a *AgentRun) pruneOldToolResults(messages []chatMessage, currentTurn int) []chatMessage {
 	const (
-		softTrimAge    = 5    // Turns before soft trim (truncate to 500 chars)
-		hardTrimAge    = 10   // Turns before hard trim (remove entirely)
-		softTrimChars  = 500  // Max chars after soft trim
+		softTrimAge   = 5   // Turns before soft trim (truncate to 500 chars)
+		hardTrimAge   = 10  // Turns before hard trim (remove entirely)
+		softTrimChars = 500 // Max chars after soft trim
 	)
 
 	// Estimate the "turn" of each message based on position. Tool messages

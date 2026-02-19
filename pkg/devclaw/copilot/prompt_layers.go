@@ -49,9 +49,9 @@ type layerEntry struct {
 // bootstrapCacheEntry holds a cached bootstrap file with a TTL to avoid
 // re-reading from disk on every prompt compose.
 type bootstrapCacheEntry struct {
-	content   string
-	hash      [32]byte  // SHA-256 of the on-disk content.
-	cachedAt  time.Time // When the entry was last validated.
+	content  string
+	hash     [32]byte  // SHA-256 of the on-disk content.
+	cachedAt time.Time // When the entry was last validated.
 }
 
 // bootstrapCacheTTL is how long a cached bootstrap entry is considered fresh.
@@ -293,7 +293,14 @@ func (p *PromptComposer) buildCoreLayer() string {
 
 	b.WriteString("\n## Memory\n\n")
 	b.WriteString("Before answering questions about prior work, preferences, or context, use memory_search to recall relevant information.\n")
-	b.WriteString("When you learn something important about the user (preference, habit, decision), save it with memory_save.\n")
+	b.WriteString("When you learn something important about the user (preference, habit, decision), save it with memory_save.\n\n")
+	b.WriteString("**Architectural Memory:**\n")
+	b.WriteString("When you discover how a project is structured, save it for future sessions:\n")
+	b.WriteString("- Entry points: memory_save(\"Project X entry point is Y\")\n")
+	b.WriteString("- Routing patterns: memory_save(\"Routes in Project X are mounted in Z\")\n")
+	b.WriteString("- Build commands: memory_save(\"Project X builds with: npm run build\")\n")
+	b.WriteString("- Common issues: memory_save(\"Project X requires restart after route changes\")\n")
+	b.WriteString("These architectural facts help you work faster across sessions.\n")
 
 	b.WriteString("\n## Sub-Agent Orchestration\n\n")
 	b.WriteString("You CAN and SHOULD spawn sub-agents for parallel or complex work using `spawn_subagent`.\n\n")
@@ -344,8 +351,34 @@ func (p *PromptComposer) buildCoreLayer() string {
 	b.WriteString("- Recoverable errors (file not found, missing parameter, invalid path) are HINTS — fix the input and retry.\n")
 	b.WriteString("- Only ask the user a question when you need genuinely new information, not when you're stuck on a technical problem.\n\n")
 
+	b.WriteString("## Systematic Debugging\n\n")
+	b.WriteString("When a task fails after 2-3 attempts with the same approach:\n\n")
+	b.WriteString("**STOP and investigate the root cause:**\n")
+	b.WriteString("1. Map the architecture: entry points, dependencies, module structure, how components connect\n")
+	b.WriteString("2. Gather evidence: read error logs completely, check file existence, verify compilation output\n")
+	b.WriteString("3. Form a hypothesis: what is the actual root cause? What evidence supports it?\n")
+	b.WriteString("4. Test your hypothesis: minimal reproduction, verify each assumption\n")
+	b.WriteString("5. Document findings: use memory_save for architectural discoveries\n")
+	b.WriteString("6. Only then, try a NEW approach (not a variation of the failed one)\n\n")
+	b.WriteString("**NEVER repeat the same failed approach more than 3 times.**\n")
+	b.WriteString("If you find yourself doing the same thing repeatedly, you're in a loop — stop and investigate.\n\n")
+
+	b.WriteString("## Debugging Checklist\n\n")
+	b.WriteString("Before rebuilding/restarting after a failure, verify:\n")
+	b.WriteString("- [ ] The code exists in source files (not just in your head)\n")
+	b.WriteString("- [ ] The code exists in compiled/built output\n")
+	b.WriteString("- [ ] Imports/exports are correct and complete\n")
+	b.WriteString("- [ ] The entry point actually loads/mounts the module\n")
+	b.WriteString("- [ ] Logs show the actual error (not assumptions)\n")
+	b.WriteString("- [ ] You can reproduce the issue with a minimal test case\n\n")
+	b.WriteString("Rebuilding without understanding WHY it failed just wastes time.\n\n")
+
 	b.WriteString("## Coding Strategy\n\n")
 	b.WriteString("For ANY coding task (creating projects, writing components, editing code, fixing bugs, refactoring):\n\n")
+	b.WriteString("**Before writing code:**\n")
+	b.WriteString("1. Understand the existing architecture (entry points, module structure, routing)\n")
+	b.WriteString("2. Identify where your changes need to go (which files, which functions)\n")
+	b.WriteString("3. Check if similar patterns exist in the codebase (follow conventions)\n\n")
 	b.WriteString("**ALWAYS use `claude-code_execute`** — it is your primary coding tool. It handles:\n")
 	b.WriteString("- Multi-file creation and editing with full context\n")
 	b.WriteString("- Error detection and auto-correction\n")
@@ -356,6 +389,10 @@ func (p *PromptComposer) buildCoreLayer() string {
 	b.WriteString("Example: instead of generating 200 lines of React and calling write_file, do:\n")
 	b.WriteString("```\nclaude-code_execute(prompt: \"Create a modern React landing page for rogadx.com with...\")\n```\n\n")
 	b.WriteString("Use `bash` only for quick one-liners (ls, mkdir, cat, curl). Use `write_file`/`edit_file` only for small config files (<20 lines).\n\n")
+	b.WriteString("**After making changes:**\n")
+	b.WriteString("- Verify the code was actually written (read the file)\n")
+	b.WriteString("- Check compilation/build output for errors\n")
+	b.WriteString("- Test with a minimal case before declaring success\n\n")
 
 	b.WriteString("## Efficiency\n\n")
 	b.WriteString("The Project Context section below already contains SOUL.md, AGENTS.md, IDENTITY.md, USER.md, TOOLS.md, and MEMORY.md contents. ")
@@ -900,9 +937,9 @@ func (p *PromptComposer) assembleLayers(layers []layerEntry) string {
 		LayerBusiness:     1000, // workspace context
 		LayerSkills:       p.config.TokenBudget.Skills,
 		LayerMemory:       p.config.TokenBudget.Memory,
-		LayerTemporal:     200,  // timestamp
+		LayerTemporal:     200, // timestamp
 		LayerConversation: p.config.TokenBudget.History,
-		LayerRuntime:      200,  // runtime line
+		LayerRuntime:      200, // runtime line
 	}
 
 	// Phase 1: include all layers, tracking total.
