@@ -55,68 +55,7 @@ access:
   blocked_groups: []                   # Group JIDs blocked
   pending_message: "Access not authorized. Contact an admin."
 
-# ── Intent Router ──────────────────────────────────────────
-# Advanced message routing and filtering.
-intent_router:
-  enabled: true                        # Master switch for the router
-  magic_word: "sudo_make_me_sandwich"  # Bypass word: skips all filters if present
 
-  # Layer 1: Regex Filter
-  # Quick pattern matching for dropping spam or routing to fast tasks.
-  regex:
-    enabled: true
-    block_patterns:                    # Regexes to silently drop
-      - "^ignore_me.*"
-      - "^spam_.*"
-    fast_task_patterns:                # Regex -> Intent (routes to unique session)
-      "^/ping": "fast_task:ping"
-      "^/weather": "fast_task:weather"
-
-  # Layer 2: Embedding Router
-  # Routes based on semantic meaning of the message.
-  embedding:
-    enabled: true
-    min_score: 0.75                    # 0.0-1.0 similarity threshold
-    routes:                            # Intent Label -> Session Suffix (Role)
-      "coding_question": ":coder"      # Routes to 'coder' agent
-      "casual_chat": ""                # Default session
-      "infrastructure": ":ops"         # Routes to 'ops' agent
-
-  # Layer 3: Semantic Scoring
-  # Uses LLM to score message value/importance (0-10).
-  scoring:
-    enabled: true
-    min_score: 3.0                     # Drop messages below this score
-    model: "qwen2.5:0.5b"              # Lightweight model for scoring
-
-# ── Workspaces ─────────────────────────────────────────────
-# Isolated profiles: each has its own prompt, skills, model, memory.
-workspaces:
-  default_workspace: "default"
-  workspaces:
-    - id: "default"
-      name: "Default"
-      description: "Default workspace for all users"
-      active: true
-
-    # Uncomment and customize:
-    #
-    # - id: "personal"
-    #   name: "Personal"
-    #   instructions: |
-    #     You are my personal assistant. Help with daily tasks.
-    #   model: "gpt-4o"
-    #   language: "pt-BR"
-    #   skills: [weather, web-search, gog]
-    #   members: ["5511999999999"]
-    #
-    # - id: "work"
-    #   name: "Work Team"
-    #   instructions: |
-    #     You are a technical assistant for our dev team.
-    #   skills: [github, web-search, summarize]
-    #   members: ["5511888888888"]
-    #   groups: ["120363000000000000@g.us"]
 
 # ── Channels ───────────────────────────────────────────────
 channels:
@@ -174,23 +113,9 @@ skills:
   builtin: [weather, calculator, web-search, web-fetch]
   installed: [github, gog, summarize]
 
-# ── MCP Clients ────────────────────────────────────────────
-# External Model Context Protocol (MCP) servers.
-# Connects to external tools (like NotebookLM, Memory, etc.) via subprocesses.
-mcp_clients:
-  - name: "memory"                    # Tool prefix (e.g. memory_call)
-    command: "npx"                    # Executable to launch
-    args: ["-y", "@modelcontextprotocol/server-memory"] # Arguments
-    env: ["NODE_ENV=production"]      # Extra environment variables
-    timeout_seconds: 30               # Per-call timeout
-    disabled: true                    # Set to false to enable
 
 # ── Scheduler ──────────────────────────────────────────────
 scheduler:
   enabled: true
   storage: "./data/scheduler.db"
 
-# ── Logging ────────────────────────────────────────────────
-logging:
-  level: "info"                        # debug | info | warn | error
-  format: "json"                       # json | text
