@@ -137,6 +137,31 @@ func allocatePort() (int, error) {
 	return port, nil
 }
 
+// Stop terminates the Chrome process and closes the CDP connection.
+func (bm *BrowserManager) Stop() {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+
+	if !bm.started {
+		return
+	}
+
+	if bm.conn != nil {
+		bm.conn.Close()
+		bm.conn = nil
+	}
+
+	if bm.cmd != nil && bm.cmd.Process != nil {
+		bm.logger.Info("stopping chrome", "pid", bm.cmd.Process.Pid)
+		// On Windows, we might need a more forceful kill.
+		bm.cmd.Process.Kill()
+		bm.cmd.Wait()
+	}
+
+	bm.started = false
+	bm.wsURL = ""
+}
+
 // Start launches Chrome with CDP enabled. Called lazily on first tool use.
 func (bm *BrowserManager) Start(ctx context.Context) error {
 	bm.mu.Lock()
@@ -194,10 +219,10 @@ func (bm *BrowserManager) Start(ctx context.Context) error {
 	return nil
 }
 
-// waitForCDP polls the CDP /json/version endpoint until it responds.
+// waitForCDP polls the CDP /json endpoint until it responds with a page target.
 func (bm *BrowserManager) waitForCDP(port int, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
-	url := fmt.Sprintf("http://127.0.0.1:%d/json/version", port)
+	url := fmt.Sprintf("http://127.0.0.1:%d/json", port)
 
 	for time.Now().Before(deadline) {
 		conn, _, err := websocket.DefaultDialer.Dial(
@@ -212,12 +237,17 @@ func (bm *BrowserManager) waitForCDP(port int, timeout time.Duration) (string, e
 		resp, err := http.DefaultClient.Do(req)
 		cancel()
 		if err == nil {
-			var info struct {
+			var targets []struct {
+				Type                 string `json:"type"`
 				WebSocketDebuggerUrl string `json:"webSocketDebuggerUrl"`
 			}
-			if json.NewDecoder(resp.Body).Decode(&info) == nil && info.WebSocketDebuggerUrl != "" {
-				resp.Body.Close()
-				return info.WebSocketDebuggerUrl, nil
+			if json.NewDecoder(resp.Body).Decode(&targets) == nil {
+				for _, t := range targets {
+					if t.Type == "page" && t.WebSocketDebuggerUrl != "" {
+						resp.Body.Close()
+						return t.WebSocketDebuggerUrl, nil
+					}
+				}
 			}
 			resp.Body.Close()
 		}
@@ -431,23 +461,6 @@ func (bm *BrowserManager) FillInput(ctx context.Context, selector, value string)
 		return fmt.Errorf("input not found: %s", selector)
 	}
 	return nil
-}
-
-// Stop kills the Chrome process and closes connections.
-func (bm *BrowserManager) Stop() {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
-
-	if bm.conn != nil {
-		bm.conn.Close()
-		bm.conn = nil
-	}
-	if bm.cmd != nil && bm.cmd.Process != nil {
-		bm.cmd.Process.Kill()
-		bm.cmd.Wait()
-		bm.logger.Info("chrome stopped")
-	}
-	bm.started = false
 }
 
 // ─── Tool Registration ───

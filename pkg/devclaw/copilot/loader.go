@@ -59,8 +59,10 @@ func ParseConfig(data []byte) (*Config, error) {
 	}
 
 	// YAML unmarshal zeros bool fields when absent. Merge with defaults so
-	// vision/transcription are enabled out of the box, and partial media
-	// sections (e.g. only vision_model) don't accidentally disable features.
+	// features are enabled out of the box, and partial sections (e.g. only
+	// vision_model or chrome_path) don't accidentally disable them.
+
+	// Media
 	if _, hasMedia := raw["media"]; !hasMedia {
 		cfg.Media = DefaultMediaConfig()
 	} else {
@@ -71,6 +73,38 @@ func ParseConfig(data []byte) (*Config, error) {
 		}
 		if _, set := mediaMap["transcription_enabled"]; !set {
 			cfg.Media.TranscriptionEnabled = defaults.TranscriptionEnabled
+		}
+	}
+
+	// Browser
+	if _, hasBrowser := raw["browser"]; !hasBrowser {
+		cfg.Browser = DefaultBrowserConfig()
+	} else {
+		defaults := DefaultBrowserConfig()
+		browserMap, _ := raw["browser"].(map[string]any)
+		if _, set := browserMap["enabled"]; !set {
+			cfg.Browser.Enabled = defaults.Enabled
+		}
+	}
+
+	// Subagents
+	if _, hasSubagents := raw["subagents"]; !hasSubagents {
+		cfg.Subagents = DefaultSubagentConfig()
+	} else {
+		defaults := DefaultSubagentConfig()
+		subMap, _ := raw["subagents"].(map[string]any)
+		if _, set := subMap["enabled"]; !set {
+			cfg.Subagents.Enabled = defaults.Enabled
+		}
+	}
+
+	// Scheduler
+	if _, hasScheduler := raw["scheduler"]; !hasScheduler {
+		cfg.Scheduler.Enabled = true
+	} else {
+		schedMap, _ := raw["scheduler"].(map[string]any)
+		if _, set := schedMap["enabled"]; !set {
+			cfg.Scheduler.Enabled = true
 		}
 	}
 
@@ -213,6 +247,7 @@ func sanitizeSecret(value, envVar string) string {
 
 // IsEnvReference checks if a string is an environment variable reference.
 func IsEnvReference(s string) bool {
+	s = strings.TrimSpace(s)
 	return strings.HasPrefix(s, "${") || strings.HasPrefix(s, "$")
 }
 

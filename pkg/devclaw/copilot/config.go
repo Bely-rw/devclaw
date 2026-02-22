@@ -117,6 +117,102 @@ type Config struct {
 
 	// Group configures group chat behavior.
 	Group GroupConfig `yaml:"group"`
+
+	// IntentRouter configures the frontend intent routing system.
+	IntentRouter IntentRouterConfig `yaml:"intent_router"`
+
+	// MCPClients lists external MCP servers to connect to at startup.
+	// Each entry launches a subprocess and registers its tools natively.
+	MCPClients []MCPClientConfig `yaml:"mcp_clients"`
+
+	// Browser configures the native browser automation tool.
+	Browser BrowserConfig `yaml:"browser"`
+}
+
+// IntentRouterConfig configures the 3-layer intent routing system.
+type IntentRouterConfig struct {
+	// Enabled turns the entire router on/off (default: false).
+	Enabled bool `yaml:"enabled"`
+
+	// MagicWord is a safety bypass keyword. If present, message is always allowed
+	// and routed to the main agent, skipping all filters.
+	MagicWord string `yaml:"magic_word"`
+
+	// Regex (Layer 1) configures the regex-based filter.
+	Regex RegexFilterConfig `yaml:"regex"`
+
+	// Embedding (Layer 2) configures the embedding-based router.
+	Embedding EmbeddingRouterConfig `yaml:"embedding"`
+
+	// Scoring (Layer 3) configures the semantic scoring filter.
+	Scoring ScoringConfig `yaml:"scoring"`
+}
+
+// RegexFilterConfig configures Layer 1 (Regex).
+type RegexFilterConfig struct {
+	// Enabled turns this layer on/off.
+	Enabled bool `yaml:"enabled"`
+
+	// BlockPatterns is a list of regex patterns to strictly block/drop.
+	// Messages matching these are silently ignored.
+	BlockPatterns []string `yaml:"block_patterns"`
+
+	// FastTaskPatterns maps regex patterns to specific intents/sessions.
+	// e.g. "^/ping" -> "fast_task:ping"
+	FastTaskPatterns map[string]string `yaml:"fast_task_patterns"`
+}
+
+// EmbeddingRouterConfig configures Layer 2 (Embedding).
+type EmbeddingRouterConfig struct {
+	// Enabled turns this layer on/off.
+	Enabled bool `yaml:"enabled"`
+
+	// Routes maps semantic intent labels to target personas/session-suffixes.
+	// e.g. "coding_question" -> ":coder", "casual_chat" -> "" (default)
+	Routes map[string]string `yaml:"routes"`
+
+	// MinScore is the minimum cosine similarity to consider a match.
+	MinScore float64 `yaml:"min_score"`
+}
+
+// ScoringConfig configures Layer 3 (Semantic Scoring).
+type ScoringConfig struct {
+	// Enabled turns this layer on/off.
+	Enabled bool `yaml:"enabled"`
+
+	// MinScore is the minimum value (0-10) required to pass.
+	// Messages below this score are dropped or routed to low-priority.
+	MinScore float64 `yaml:"min_score"`
+
+	// Model is the small LLM model used for scoring (e.g. "qwen2.5:0.5b").
+	// If empty, uses the main model (not recommended for performance).
+	Model string `yaml:"model"`
+}
+
+// MCPClientConfig describes a single external MCP server to connect to.
+type MCPClientConfig struct {
+	// Name is a human-readable label used as tool prefix (e.g. "notebooklm").
+	Name string `yaml:"name"`
+
+	// Command is the executable to launch (e.g. "uv", "npx", "python").
+	Command string `yaml:"command"`
+
+	// Args are the arguments passed to Command.
+	// Example: ["run", "notebooklm-mcp-server"]
+	Args []string `yaml:"args"`
+
+	// Env holds extra environment variables for the subprocess (KEY=VALUE format).
+	Env []string `yaml:"env"`
+
+	// TimeoutSeconds is the per-call timeout in seconds (default: 30).
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+
+	// Prefix overrides the tool name prefix (default: Name + "_").
+	// Set to "" to disable prefixing.
+	Prefix string `yaml:"prefix"`
+
+	// Disabled skips this client without removing the config entry.
+	Disabled bool `yaml:"disabled"`
 }
 
 // DatabaseConfig configures the central devclaw.db SQLite database.
@@ -283,10 +379,10 @@ type FallbackConfig struct {
 
 // ProviderChainEntry defines a single provider in the fallback chain.
 type ProviderChainEntry struct {
-	Provider string `yaml:"provider"`           // Provider name (openai, anthropic, ollama, etc.)
-	BaseURL  string `yaml:"base_url"`           // API endpoint
-	APIKey   string `yaml:"api_key,omitempty"`  // API key (can use ${VAR} references)
-	Model    string `yaml:"model"`              // Model to use from this provider
+	Provider string `yaml:"provider"`          // Provider name (openai, anthropic, ollama, etc.)
+	BaseURL  string `yaml:"base_url"`          // API endpoint
+	APIKey   string `yaml:"api_key,omitempty"` // API key (can use ${VAR} references)
+	Model    string `yaml:"model"`             // Model to use from this provider
 }
 
 // BudgetConfig configures monthly cost tracking and limits.
@@ -522,6 +618,9 @@ type LoggingConfig struct {
 
 	// Format is the log format ("json", "text").
 	Format string `yaml:"format"`
+
+	// File is the path to the log file. If set, logs will be written to both Stdout and this file.
+	File string `yaml:"file"`
 }
 
 // DefaultConfig returns the default assistant configuration.
@@ -536,8 +635,8 @@ func DefaultConfig() *Config {
 		Instructions: "You are a helpful personal assistant. Be concise and practical.",
 		Timezone:     "America/Sao_Paulo",
 		Language:     "pt-BR",
-		Access:     DefaultAccessConfig(),
-		Workspaces: DefaultWorkspaceConfig(),
+		Access:       DefaultAccessConfig(),
+		Workspaces:   DefaultWorkspaceConfig(),
 		Channels: ChannelsConfig{
 			WhatsApp: whatsapp.DefaultConfig(),
 		},
@@ -595,13 +694,13 @@ func DefaultConfig() *Config {
 			Enabled: true,
 			Storage: "./data/scheduler.db",
 		},
-		Heartbeat:  DefaultHeartbeatConfig(),
-		Subagents:  DefaultSubagentConfig(),
-		Agent:      DefaultAgentConfig(),
-		Fallback:   DefaultFallbackConfig(),
-		Budget:     DefaultBudgetConfig(),
-		Team:       DefaultTeamConfig(),
-		Media:      DefaultMediaConfig(),
+		Heartbeat: DefaultHeartbeatConfig(),
+		Subagents: DefaultSubagentConfig(),
+		Agent:     DefaultAgentConfig(),
+		Fallback:  DefaultFallbackConfig(),
+		Budget:    DefaultBudgetConfig(),
+		Team:      DefaultTeamConfig(),
+		Media:     DefaultMediaConfig(),
 		Logging: LoggingConfig{
 			Level:  "info",
 			Format: "json",
@@ -628,6 +727,7 @@ func DefaultConfig() *Config {
 			Enabled: false,
 			Address: ":8090",
 		},
+		Browser: DefaultBrowserConfig(),
 	}
 }
 
