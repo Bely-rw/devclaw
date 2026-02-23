@@ -16,7 +16,9 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,12 +26,23 @@ import (
 
 // BuiltinLoader creates and returns built-in skills based on the enabled list.
 type BuiltinLoader struct {
-	enabled  []string
-	logger   *slog.Logger
-	projProv ProjectProvider // optional, for coding skills (claude-code, project-manager)
-	apiKey   string         // LLM API key (injected as ANTHROPIC_API_KEY for Claude Code)
-	baseURL  string         // LLM API base URL (injected as ANTHROPIC_BASE_URL for Claude Code)
-	model    string         // LLM model name (injected as ANTHROPIC_DEFAULT_*_MODEL)
+	enabled   []string
+	logger    *slog.Logger
+	projProv  ProjectProvider // optional, for coding skills (claude-code, project-manager)
+	apiKey    string          // LLM API key (injected as ANTHROPIC_API_KEY for Claude Code)
+	baseURL   string          // LLM API base URL (injected as ANTHROPIC_BASE_URL for Claude Code)
+	model     string          // LLM model name (injected as ANTHROPIC_DEFAULT_*_MODEL)
+	searchCfg WebSearchConfig // configuration for web-search skill
+	skillsDir string          // user skills directory for skill-creator
+	registry  *Registry       // registry for skill-creator tools
+	installer *Installer      // installer for skill-creator
+}
+
+// WebSearchConfig holds configuration for the web-search skill.
+type WebSearchConfig struct {
+	Provider    string `yaml:"provider"`      // "brave" or "duckduckgo"
+	BraveAPIKey string `yaml:"brave_api_key"` // Brave Search API key
+	MaxResults  int    `yaml:"max_results"`   // default: 8
 }
 
 // NewBuiltinLoader creates a loader for built-in skills.
@@ -56,15 +69,29 @@ func (l *BuiltinLoader) SetAPIConfig(apiKey, baseURL, model string) {
 	l.model = model
 }
 
+// SetWebSearchConfig injects the configuration for the web-search skill.
+func (l *BuiltinLoader) SetWebSearchConfig(cfg WebSearchConfig) {
+	l.searchCfg = cfg
+}
+
+// SetSkillManagementConfig injects dependencies for skill management (skill-creator).
+func (l *BuiltinLoader) SetSkillManagementConfig(dir string, r *Registry, i *Installer) {
+	l.skillsDir = dir
+	l.registry = r
+	l.installer = i
+}
+
 // Load returns built-in skills matching the enabled list.
 func (l *BuiltinLoader) Load(_ context.Context) ([]Skill, error) {
 	all := map[string]func() Skill{
 		"calculator":      newCalculatorSkill,
 		"web-fetch":       newWebFetchSkill,
+		"web-search":      func() Skill { return newWebSearchSkill(l.searchCfg) },
 		"datetime":        newDatetimeSkill,
 		"image-gen":       newImageGenSkill,
 		"claude-code":     func() Skill { return NewClaudeCodeSkill(l.projProv, l.apiKey, l.baseURL, l.model) },
 		"project-manager": func() Skill { return NewProjectManagerSkill(l.projProv) },
+		"skill-creator":   func() Skill { return newSkillCreatorSkill(l.skillsDir, l.registry, l.installer) },
 	}
 
 	var result []Skill
@@ -424,11 +451,11 @@ func (s *datetimeSkill) Tools() []Tool {
 				}
 				now := time.Now().In(loc)
 				return map[string]string{
-					"datetime":  now.Format("2006-01-02 15:04:05"),
-					"timezone":  tz,
-					"day":       now.Format("Monday"),
-					"unix":      fmt.Sprintf("%d", now.Unix()),
-					"iso8601":   now.Format(time.RFC3339),
+					"datetime": now.Format("2006-01-02 15:04:05"),
+					"timezone": tz,
+					"day":      now.Format("Monday"),
+					"unix":     fmt.Sprintf("%d", now.Unix()),
+					"iso8601":  now.Format(time.RFC3339),
 				}, nil
 			},
 		},
@@ -647,14 +674,33 @@ func (s *imageGenSkill) generateImage(ctx context.Context, prompt, size, quality
 	img := result.Data[0]
 
 	// Save the image to a temp file for media channels.
-	tmpDir := os.TempDir()
-	imgPath := fmt.Sprintf("%s/devclaw-img-%d.png", tmpDir, time.Now().UnixNano())
+	// Use os.CreateTemp for a random name (avoids predictable path injection)
+	// and write with owner-only permissions (0o600) so other local users
+	// cannot read potentially sensitive generated images.
 	imgData, err := base64.StdEncoding.DecodeString(img.B64JSON)
 	if err != nil {
 		return nil, fmt.Errorf("decoding image data: %w", err)
 	}
-	if err := os.WriteFile(imgPath, imgData, 0o644); err != nil {
+	tmpImgFile, err := os.CreateTemp("", "devclaw-img-*.png")
+	if err != nil {
+		return nil, fmt.Errorf("creating image temp file: %w", err)
+	}
+	imgPath := tmpImgFile.Name()
+	// Restrict before writing data — prevents a race where another process
+	// could read a world-readable file between creation and chmod.
+	if err := os.Chmod(imgPath, 0o600); err != nil {
+		tmpImgFile.Close()
+		os.Remove(imgPath)
+		return nil, fmt.Errorf("setting image temp file permissions: %w", err)
+	}
+	if _, err := tmpImgFile.Write(imgData); err != nil {
+		tmpImgFile.Close()
+		os.Remove(imgPath)
 		return nil, fmt.Errorf("saving image: %w", err)
+	}
+	if err := tmpImgFile.Close(); err != nil {
+		os.Remove(imgPath)
+		return nil, fmt.Errorf("closing image temp file: %w", err)
 	}
 
 	response := map[string]any{
@@ -669,3 +715,164 @@ func (s *imageGenSkill) generateImage(ctx context.Context, prompt, size, quality
 	return response, nil
 }
 
+// ============================================================
+// Web Search Skill
+// ============================================================
+
+type webSearchSkill struct {
+	cfg    WebSearchConfig
+	client *http.Client
+}
+
+func newWebSearchSkill(cfg WebSearchConfig) Skill {
+	return &webSearchSkill{
+		cfg:    cfg,
+		client: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+func (s *webSearchSkill) Metadata() Metadata {
+	return Metadata{
+		Name:        "web-search",
+		Version:     "1.0.0",
+		Author:      "devclaw",
+		Description: "Search the web for information using Brave Search or DuckDuckGo",
+		Category:    "utility",
+		Tags:        []string{"web", "search", "brave", "google"},
+	}
+}
+
+func (s *webSearchSkill) Tools() []Tool {
+	return []Tool{
+		{
+			Name:        "search",
+			Description: "Search the web and return results with titles, URLs, and snippets.",
+			Parameters: []ToolParameter{
+				{Name: "query", Type: "string", Description: "The search query", Required: true},
+			},
+			Handler: func(ctx context.Context, args map[string]any) (any, error) {
+				query, _ := args["query"].(string)
+				if query == "" {
+					return nil, fmt.Errorf("query is required")
+				}
+				return s.runSearch(ctx, query)
+			},
+		},
+	}
+}
+
+func (s *webSearchSkill) SystemPrompt() string {
+	return "You have access to a web search tool. Use it to find up-to-date information on the internet. Prefer using this built-in tool over any other search methods."
+}
+
+func (s *webSearchSkill) Triggers() []string {
+	return []string{"search", "web search", "google", "find"}
+}
+
+func (s *webSearchSkill) Init(_ context.Context, _ map[string]any) error { return nil }
+
+func (s *webSearchSkill) Execute(ctx context.Context, input string) (string, error) {
+	res, err := s.runSearch(ctx, input)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%v", res), nil
+}
+
+func (s *webSearchSkill) Shutdown() error { return nil }
+
+func (s *webSearchSkill) runSearch(ctx context.Context, query string) (any, error) {
+	provider := s.cfg.Provider
+	apiKey := s.cfg.BraveAPIKey
+	if provider == "brave" && apiKey == "" {
+		provider = "duckduckgo"
+	}
+
+	maxResults := s.cfg.MaxResults
+	if maxResults <= 0 {
+		maxResults = 8
+	}
+
+	if provider == "brave" {
+		return s.searchBrave(ctx, query, apiKey, maxResults)
+	}
+	return s.searchDDG(ctx, query, maxResults)
+}
+
+func (s *webSearchSkill) searchBrave(ctx context.Context, query, apiKey string, maxResults int) (any, error) {
+	searchURL := fmt.Sprintf("https://api.search.brave.com/res/v1/web/search?q=%s&count=%d",
+		url.QueryEscape(query), maxResults)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Subscription-Token", apiKey)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Brave API error: %s", resp.Status)
+	}
+
+	var data struct {
+		Web struct {
+			Results []struct {
+				Title       string `json:"title"`
+				URL         string `json:"url"`
+				Description string `json:"description"`
+			} `json:"results"`
+		} `json:"web"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	return data.Web.Results, nil
+}
+
+func (s *webSearchSkill) searchDDG(ctx context.Context, query string, maxResults int) (any, error) {
+	// Simple DuckDuckGo HTML scraper fallback
+	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(query))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (DevClaw Bot)")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Very basic regex-based extraction for DuckDuckGo HTML
+	// In a real scenario, we'd use a proper HTML parser.
+	re := regexp.MustCompile(`<a class="result__a" href="([^"]+)">([^<]+)</a>.*?<a class="result__snippet"[^>]*>([^<]+)</a>`)
+	matches := re.FindAllStringSubmatch(string(body), maxResults)
+
+	var results []map[string]string
+	for _, m := range matches {
+		results = append(results, map[string]string{
+			"url":         m[1],
+			"title":       m[2],
+			"description": m[3],
+		})
+	}
+
+	if len(results) == 0 {
+		return "No results found on DuckDuckGo.", nil
+	}
+
+	return results, nil
+}

@@ -68,6 +68,7 @@ type OpenClawRequire struct {
 	AnyBins []string `json:"anyBins"`
 	Env     []string `json:"env"`
 	Config  []string `json:"config"`
+	Skills  []string `json:"skills"`
 }
 
 // InstallSpec describes how to install a dependency.

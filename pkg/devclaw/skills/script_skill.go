@@ -161,7 +161,7 @@ func (s *ScriptSkill) Execute(ctx context.Context, input string) (string, error)
 	}
 
 	// No scripts — this is a prompt-only skill.
-	return fmt.Sprintf("[%s] This skill provides instructions only. Use the system prompt for guidance.", s.def.Name), nil
+	return fmt.Sprintf("[%s] This skill is design-only/instruction-based and does not have an execution script. Please follow the instructions provided in its system prompt.", s.def.Name), nil
 }
 
 // Shutdown releases resources.
