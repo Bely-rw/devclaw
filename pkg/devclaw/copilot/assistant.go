@@ -19,8 +19,6 @@ import (
 	"github.com/jholhewres/devclaw/pkg/devclaw/channels"
 	"github.com/jholhewres/devclaw/pkg/devclaw/copilot/memory"
 	"github.com/jholhewres/devclaw/pkg/devclaw/copilot/security"
-	"github.com/jholhewres/devclaw/pkg/devclaw/database"
-	"github.com/jholhewres/devclaw/pkg/devclaw/media"
 	"github.com/jholhewres/devclaw/pkg/devclaw/sandbox"
 	"github.com/jholhewres/devclaw/pkg/devclaw/scheduler"
 	"github.com/jholhewres/devclaw/pkg/devclaw/skills"
@@ -118,11 +116,6 @@ type Assistant struct {
 	// scheduler, session persistence, and audit logger.
 	devclawDB *sql.DB
 
-	// dbHub is the Database Hub providing unified database access with
-	// multi-backend support (SQLite, PostgreSQL, MySQL). When using SQLite,
-	// dbHub.DB() returns the same connection as devclawDB.
-	dbHub *database.Hub
-
 	// ttsProvider handles text-to-speech synthesis (nil if TTS is disabled).
 	ttsProvider tts.Provider
 
@@ -138,44 +131,8 @@ type Assistant struct {
 	// userMgr handles multi-user operations when team mode is enabled.
 	userMgr *UserManager
 
-	// intentClassifier handles frontend intent classification and classification.
-	intentClassifier *IntentClassifier
-
-	// teamMgr manages persistent agents and team memory.
-	teamMgr *TeamManager
-
-	// maintenanceMgr manages maintenance mode state.
-	maintenanceMgr *MaintenanceManager
-
-	// systemCommands handles system administration commands.
-	systemCommands *SystemCommands
-
-	// pairingMgr manages DM pairing tokens and requests.
-	pairingMgr *PairingManager
-
-	// agentRouter routes messages to specialized agent profiles.
-	agentRouter *AgentRouter
-
-	// groupPolicyMgr manages group-specific policies and activation modes.
-	groupPolicyMgr *GroupPolicyManager
-
-	// webhookMgr manages external webhook delivery.
-	webhookMgr *WebhookManager
-
-	// metricsCollector collects and reports system metrics.
-	metricsCollector *MetricsCollector
-
-	// memoryIndexer performs background memory indexing.
-	memoryIndexer *MemoryIndexer
-
-	// mediaSvc provides native media handling (upload, enrich, send).
-	mediaSvc *media.MediaService
-
 	// configMu protects hot-reloadable config fields.
 	configMu sync.RWMutex
-
-	// browserManager manages the native browser automation tool.
-	browserManager *BrowserManager
 
 	logger *slog.Logger
 
@@ -218,7 +175,6 @@ func New(cfg *Config, logger *slog.Logger) *Assistant {
 		llmClient:        NewLLMClient(cfg, logger),
 		toolExecutor:     te,
 		approvalMgr:      approvalMgr,
-		intentClassifier: NewIntentClassifier(cfg, memory.NewEmbeddingProvider(cfg.Memory.Embedding), NewLLMClient(cfg, logger), logger.With("component", "classifier")),
 		skillRegistry:    skills.NewRegistry(logger.With("component", "skills")),
 		sessionStore:     NewSessionStore(logger.With("component", "sessions")),
 		promptComposer:   NewPromptComposer(cfg),
@@ -231,44 +187,8 @@ func New(cfg *Config, logger *slog.Logger) *Assistant {
 		interruptInboxes: make(map[string]chan string),
 		followupQueues:   make(map[string][]*channels.IncomingMessage),
 		usageTracker:     NewUsageTracker(logger.With("component", "usage")),
-		browserManager:   NewBrowserManager(cfg.Browser, logger),
 		logger:           logger,
 	}
-
-	// Initialize database-backed managers.
-	// Assume devclawDB is initialized elsewhere or added to Assistant later?
-	// Wait, devclawDB is a field in Assistant. It needs to be initialized.
-	// Looking at the struct, devclawDB *sql.DB.
-	// In the original code, it might have been initialized before New or inside.
-	// Since I don't see it in the HEAD version of New, I'll assume it's handled or I should add it.
-	// Actually, let's check where devclawDB comes from.
-
-	// For now, I'll add the initializations based on the constructors found.
-	// Note: SystemCommands needs 'a' (the assistant).
-	a.maintenanceMgr = NewMaintenanceManager(a.devclawDB, logger.With("component", "maintenance"))
-	a.teamMgr = NewTeamManager(a.devclawDB, a.scheduler, logger.With("component", "team"))
-	a.pairingMgr = NewPairingManager(a.devclawDB, a.accessMgr, a.workspaceMgr, logger.With("component", "pairing"))
-	a.systemCommands = NewSystemCommands(a, "config.yaml", a.maintenanceMgr)
-	a.agentRouter = NewAgentRouter(cfg.Agents, logger.With("component", "agent-router"))
-	a.groupPolicyMgr = NewGroupPolicyManager(cfg.Groups, logger.With("component", "group-policy"))
-	a.webhookMgr = NewWebhookManager(WebhooksConfig{
-		Enabled:  cfg.Hooks.Enabled,
-		Webhooks: cfg.Hooks.Webhooks,
-	}, a.hookMgr, logger.With("component", "webhooks"))
-	a.metricsCollector = NewMetricsCollector(cfg.Routines.Metrics, logger.With("component", "metrics"))
-	a.memoryIndexer = NewMemoryIndexer(cfg.Routines.MemoryIndexer, logger.With("component", "memory-indexer"))
-
-	// Initialize Media Service.
-	mediaStore := media.NewFileSystemStore(media.StoreConfig{
-		BaseDir:     cfg.NativeMedia.Store.BaseDir,
-		TempDir:     cfg.NativeMedia.Store.TempDir,
-		MaxFileSize: cfg.NativeMedia.Store.MaxFileSize,
-	}, logger)
-	a.mediaSvc = media.NewMediaService(mediaStore, a.channelMgr, media.ServiceConfig{
-		MaxImageSize: cfg.NativeMedia.Service.MaxImageSize,
-		MaxAudioSize: cfg.NativeMedia.Service.MaxAudioSize,
-		MaxDocSize:   cfg.NativeMedia.Service.MaxDocSize,
-	}, logger)
 
 	// Initialize tool loop detection config (detectors are created per-run to avoid races).
 	// Use defaults, then apply user overrides. NewToolLoopDetector normalizes zero-values.
@@ -301,47 +221,37 @@ func New(cfg *Config, logger *slog.Logger) *Assistant {
 		return approvalMgr.Request(sessionID, callerJID, toolName, args, sendMsg)
 	})
 
-	// Wire subagent announce callback: when a subagent completes, inject the
-	// result back into the parent session so the main agent can process and
-	// reformulate it (matching approach). This allows the agent to
-	// synthesize multiple subagent results and maintain conversation context.
+	// Wire subagent announce callback: when a subagent completes, push the
+	// result to the parent's channel instead of requiring the agent to poll
+	// with wait_subagent.
 	a.subagentMgr.SetAnnounceCallback(func(run *SubagentRun) {
-		// Build session ID from origin coordinates.
-		channel := run.OriginChannel
-		chatID := run.OriginTo
-		if channel == "" || chatID == "" {
-			// Fallback: derive from ParentSessionID ("channel:chatID").
-			var ok bool
-			channel, chatID, ok = strings.Cut(run.ParentSessionID, ":")
-			if !ok {
-				return
-			}
+		sessionID := run.ParentSessionID
+		channel, chatID, ok := strings.Cut(sessionID, ":")
+		if !ok {
+			return
 		}
-		sessionID := MakeSessionID(channel, chatID)
 
-		// Build the system message for the main agent.
 		var msg string
 		switch run.Status {
 		case SubagentStatusCompleted:
 			result := run.Result
-			if len(result) > 4000 {
-				result = result[:4000] + "\n... (truncated)"
+			if len(result) > 3000 {
+				result = result[:3000] + "\n... (truncated)"
 			}
-			msg = fmt.Sprintf("[System Message] A subagent task %q just completed successfully.\n\nResult:\n%s\n\nConvert this result into your normal assistant voice and send that user-facing update now. Keep this internal context private (don't mention system/log/stats details), and do not copy the system message verbatim. Reply ONLY: NO_REPLY if this exact result was already delivered to the user in this same turn.",
-				run.Label, result)
+			msg = fmt.Sprintf("✅ Subagent **%s** completed in %s:\n\n%s",
+				run.Label, run.Duration.Round(time.Second), result)
 		case SubagentStatusFailed:
-			msg = fmt.Sprintf("[System Message] A subagent task %q failed after %s: %s\n\nLet the user know about this failure briefly and offer to retry or investigate.",
+			msg = fmt.Sprintf("❌ Subagent **%s** failed after %s: %s",
 				run.Label, run.Duration.Round(time.Second), run.Error)
 		case SubagentStatusTimeout:
-			msg = fmt.Sprintf("[System Message] A subagent task %q timed out after %s.\n\nLet the user know about this timeout briefly and offer to retry.",
+			msg = fmt.Sprintf("⏱️ Subagent **%s** timed out after %s.",
 				run.Label, run.Duration.Round(time.Second))
 		default:
 			return
 		}
 
-		// Inject as a follow-up message into the parent session.
-		// This triggers a new agent run to process the subagent result.
-		a.enqueueFollowupMessage(sessionID, msg, channel, chatID)
+		outMsg := &channels.OutgoingMessage{Content: FormatForChannel(msg, channel)}
+		_ = a.channelMgr.Send(a.ctx, channel, chatID, outMsg)
 	})
 
 	return a
@@ -362,7 +272,7 @@ func (a *Assistant) Start(ctx context.Context) error {
 	// can access them via os.Getenv / process.env without needing .env files.
 	// This runs once at startup with zero runtime cost.
 	if a.vault != nil && a.vault.IsUnlocked() {
-		a.InjectVaultEnvVars()
+		a.injectVaultEnvVars()
 	}
 
 	// 0pre-b. Auto-resolve media transcription provider from main API config.
@@ -436,25 +346,21 @@ func (a *Assistant) Start(ctx context.Context) error {
 	})
 
 	// 0c. Open the central devclaw.db and wire all SQLite-backed storage.
-	// Uses the Database Hub for unified access (supports SQLite, PostgreSQL, MySQL).
-	hubConfig := a.config.Database.Effective()
-	dbHub, hubErr := database.NewHub(hubConfig, a.logger.With("component", "database-hub"))
-	if hubErr != nil {
-		a.logger.Error("failed to initialize database hub, falling back to file-based storage",
-			"backend", hubConfig.Backend, "error", hubErr)
+	dbPath := a.config.Database.Path
+	if dbPath == "" {
+		dbPath = "./data/devclaw.db"
+	}
+	devclawDB, dbErr := OpenDatabase(dbPath)
+	if dbErr != nil {
+		a.logger.Error("failed to open central database, falling back to file-based storage",
+			"path", dbPath, "error", dbErr)
 	} else {
-		a.dbHub = dbHub
-		// Get the underlying DB connection for backward compatibility
-		if dbHub.DB() != nil {
-			a.devclawDB = dbHub.DB()
-			a.logger.Info("database hub initialized",
-				"backend", hubConfig.Backend,
-				"path", hubConfig.SQLite.Path)
+		a.devclawDB = devclawDB
+		a.logger.Info("central database opened", "path", dbPath)
 
-			// Migrate legacy JSON/JSONL data to SQLite (one-time, idempotent).
-			dataDir := filepath.Dir(hubConfig.SQLite.Path)
-			MigrateToSQLite(a.devclawDB, dataDir, a.logger.With("component", "migrate"))
-		}
+		// Migrate legacy JSON/JSONL data to SQLite (one-time, idempotent).
+		dataDir := filepath.Dir(dbPath)
+		MigrateToSQLite(devclawDB, dataDir, a.logger.With("component", "migrate"))
 	}
 
 	// 0c-1. Session persistence: prefer SQLite, fall back to JSONL.
@@ -503,39 +409,6 @@ func (a *Assistant) Start(ctx context.Context) error {
 		a.logger.Info("subagent persistence enabled (SQLite)")
 	}
 
-	// 0c-4. Maintenance manager for maintenance mode state.
-	a.maintenanceMgr = NewMaintenanceManager(a.devclawDB, a.logger.With("component", "maintenance"))
-	if err := a.maintenanceMgr.Load(); err != nil {
-		a.logger.Warn("failed to load maintenance state", "error", err)
-	}
-
-	// 0c-5. System commands handler.
-	a.systemCommands = NewSystemCommands(a, a.config.Database.Path, a.maintenanceMgr)
-
-	// 0c-6. Pairing manager for DM access tokens.
-	a.pairingMgr = NewPairingManager(a.devclawDB, a.accessMgr, a.workspaceMgr, a.logger)
-	if err := a.pairingMgr.Load(); err != nil {
-		a.logger.Warn("failed to load pairing tokens", "error", err)
-	}
-
-	// 0d. Agent router for specialized profiles.
-	if len(a.config.Agents.Profiles) > 0 {
-		a.agentRouter = NewAgentRouter(a.config.Agents, a.logger)
-	}
-
-	// 0e. Group policy manager for group-specific behavior.
-	if len(a.config.Groups.Groups) > 0 || len(a.config.Groups.Blocked) > 0 {
-		a.groupPolicyMgr = NewGroupPolicyManager(a.config.Groups, a.logger)
-	}
-
-	// 0f. Webhook manager for external webhook delivery.
-	if a.config.Hooks.Enabled && len(a.config.Hooks.Webhooks) > 0 {
-		a.webhookMgr = NewWebhookManager(WebhooksConfig{
-			Enabled:  a.config.Hooks.Enabled,
-			Webhooks: a.config.Hooks.Webhooks,
-		}, a.hookMgr, a.logger)
-	}
-
 	// 1. Register skill loaders and load all skills.
 	a.registerSkillLoaders()
 	if err := a.skillRegistry.LoadAll(a.ctx); err != nil {
@@ -551,19 +424,6 @@ func (a *Assistant) Start(ctx context.Context) error {
 	// 1d. Create and start scheduler if enabled.
 	if a.config.Scheduler.Enabled {
 		a.initScheduler()
-	}
-
-	// 1d-2. Initialize TeamManager for persistent agents.
-	if a.devclawDB != nil && a.scheduler != nil {
-		a.teamMgr = NewTeamManager(a.devclawDB, a.scheduler, a.logger.With("component", "team-manager"))
-		// Wire spawn callback for active notification push.
-		a.teamMgr.SetSpawnAgentCallback(func(ctx context.Context, agent *PersistentAgent, task string) error {
-			sessionID := fmt.Sprintf("agent:%s:run", agent.ID)
-			a.enqueueFollowupMessage(sessionID, task, "team", agent.TeamID)
-			a.logger.Info("persistent agent triggered via spawn callback", "agent_id", agent.ID)
-			return nil
-		})
-		a.logger.Info("team manager initialized with spawn callback")
 	}
 
 	// 1e. Register system tools (needs scheduler to be created first).
@@ -590,128 +450,6 @@ func (a *Assistant) Start(ctx context.Context) error {
 		a.heartbeat.Start(a.ctx)
 	}
 
-	// 5b. Start metrics collector if enabled.
-	if a.config.Routines.Metrics.Enabled {
-		a.metricsCollector = NewMetricsCollector(a.config.Routines.Metrics, a.logger)
-		// Wire callbacks for session and subagent counts
-		a.metricsCollector.SetSessionsCountFunc(func() int64 {
-			return int64(a.sessionStore.Count())
-		})
-		if a.subagentMgr != nil {
-			a.metricsCollector.SetSubagentsCountFunc(func() int64 {
-				return int64(a.subagentMgr.ActiveCount())
-			})
-		}
-		if a.devclawDB != nil && a.config.Database.Path != "" {
-			a.metricsCollector.SetDBSizeFunc(func() int64 {
-				// Get DB file size
-				info, err := os.Stat(a.config.Database.Path)
-				if err != nil {
-					return 0
-				}
-				return info.Size() / 1024 / 1024 // MB
-			})
-		}
-		go a.metricsCollector.Start(a.ctx)
-	}
-
-	// 5c. Start memory indexer if enabled.
-	if a.config.Routines.MemoryIndexer.Enabled && a.sqliteMemory != nil {
-		a.memoryIndexer = NewMemoryIndexer(a.config.Routines.MemoryIndexer, a.logger)
-		memDir := filepath.Join(filepath.Dir(a.config.Memory.Path), "memory")
-		a.memoryIndexer.SetMemoryDir(memDir)
-		// Wire callbacks for memory indexing
-		a.memoryIndexer.SetIndexChunkFunc(func(chunks []MemoryChunk) error {
-			// Convert to memory.Chunk format and index
-			for _, c := range chunks {
-				ctx := context.Background()
-				mChunks := []memory.Chunk{{FileID: c.Filepath, Text: c.Content, Hash: c.Hash}}
-				if err := a.sqliteMemory.IndexChunks(ctx, c.Filepath, mChunks, c.Hash); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		go a.memoryIndexer.Start(a.ctx)
-	}
-
-	// 5d. Initialize native media service if enabled.
-	if a.config.NativeMedia.Enabled {
-		// Create media store
-		storeCfg := media.StoreConfig{
-			BaseDir:     a.config.NativeMedia.Store.BaseDir,
-			TempDir:     a.config.NativeMedia.Store.TempDir,
-			MaxFileSize: a.config.NativeMedia.Store.MaxFileSize,
-		}
-		mediaStore := media.NewFileSystemStore(storeCfg, a.logger)
-
-		// Create service config
-		svcCfg := media.ServiceConfig{
-			Enabled:         true,
-			MaxImageSize:    a.config.NativeMedia.Service.MaxImageSize,
-			MaxAudioSize:    a.config.NativeMedia.Service.MaxAudioSize,
-			MaxDocSize:      a.config.NativeMedia.Service.MaxDocSize,
-			TempTTL:         a.config.NativeMedia.Service.TempTTL,
-			CleanupEnabled:  a.config.NativeMedia.Service.CleanupEnabled,
-			CleanupInterval: a.config.NativeMedia.Service.CleanupInterval,
-		}
-
-		// Get effective media config to check model capabilities
-		mCfg := a.config.Media.Effective()
-
-		// Create enrichment config - sync with model capabilities
-		enrichCfg := media.EnrichmentConfig{
-			// Only auto-enrich images if vision is enabled AND config says so
-			AutoEnrichImages: mCfg.VisionEnabled && a.config.NativeMedia.Enrichment.AutoEnrichImages,
-			// Only auto-enrich audio if transcription is enabled AND config says so
-			AutoEnrichAudio: mCfg.TranscriptionEnabled && a.config.NativeMedia.Enrichment.AutoEnrichAudio,
-			// Documents don't depend on external APIs
-			AutoEnrichDocuments: a.config.NativeMedia.Enrichment.AutoEnrichDocuments,
-		}
-
-		// Build options list for media service
-		opts := []media.MediaServiceOption{
-			media.WithEnrichmentConfig(enrichCfg),
-			media.WithDocumentExtraction(func(ctx context.Context, data []byte, mimeType string) (string, error) {
-				return extractDocumentText(data, mimeType, "document", a.logger), nil
-			}),
-		}
-
-		// Add vision callback only if supported
-		if mCfg.VisionEnabled && a.llmClient != nil {
-			opts = append(opts, media.WithVision(func(ctx context.Context, imageData []byte, mimeType string) (string, error) {
-				encoded := base64.StdEncoding.EncodeToString(imageData)
-				prompt := "Describe this image in detail. Include any visible text, objects, and context."
-				// Pass vision model if configured, otherwise falls back to main model
-				return a.llmClient.CompleteWithVision(ctx, "", encoded, mimeType, prompt, mCfg.VisionDetail, mCfg.VisionModel)
-			}))
-		}
-
-		// Add transcription callback only if supported
-		if mCfg.TranscriptionEnabled && a.llmClient != nil {
-			opts = append(opts, media.WithTranscription(func(ctx context.Context, audioData []byte, filename string) (string, error) {
-				return a.llmClient.TranscribeAudio(ctx, audioData, filename, mCfg.TranscriptionModel, mCfg)
-			}))
-		}
-
-		// Create media service
-		a.mediaSvc = media.NewMediaService(mediaStore, a.channelMgr, svcCfg, a.logger, opts...)
-
-		// Start cleanup goroutine if enabled
-		if a.config.NativeMedia.Service.CleanupEnabled {
-			go a.mediaSvc.StartCleanup(a.ctx)
-		}
-
-		a.logger.Info("native media service initialized",
-			"base_dir", storeCfg.BaseDir,
-			"max_file_size", storeCfg.MaxFileSize,
-			"vision_enabled", mCfg.VisionEnabled,
-			"vision_model", mCfg.VisionModel,
-			"transcription_enabled", mCfg.TranscriptionEnabled,
-			"transcription_model", mCfg.TranscriptionModel,
-		)
-	}
-
 	// 6. Start main message processing loop.
 	go a.messageLoop()
 
@@ -734,11 +472,6 @@ func (a *Assistant) Start(ctx context.Context) error {
 			a.logger.Info("TTS enabled", "provider", a.config.TTS.Provider, "voice", a.config.TTS.Voice, "mode", a.config.TTS.AutoMode)
 		}
 	}
-
-	// 9. Connect to external MCP servers (if configured).
-	// Each client launches a subprocess, performs the MCP handshake, and
-	// registers the server's tools natively in the ToolExecutor.
-	a.startMCPClients()
 
 	a.logger.Info("DevClaw Copilot started successfully")
 	return nil
@@ -791,12 +524,6 @@ func (a *Assistant) runBootOnce() {
 	)
 }
 
-// GetMediaService returns the media service for WebUI adapter wiring.
-// Returns nil if native media is not enabled.
-func (a *Assistant) GetMediaService() *media.MediaService {
-	return a.mediaSvc
-}
-
 // Stop gracefully shuts down all subsystems.
 func (a *Assistant) Stop() {
 	a.logger.Info("stopping DevClaw Copilot...")
@@ -811,10 +538,6 @@ func (a *Assistant) Stop() {
 	}
 	a.channelMgr.Stop()
 	a.skillRegistry.ShutdownAll()
-
-	if a.browserManager != nil {
-		a.browserManager.Stop()
-	}
 
 	// Close SQLite memory store.
 	if a.sqliteMemory != nil {
@@ -888,11 +611,11 @@ func (a *Assistant) Vault() *Vault {
 	return a.vault
 }
 
-// InjectVaultEnvVars loads all vault secrets as environment variables.
+// injectVaultEnvVars loads all vault secrets as environment variables.
 // Key names are uppercased and prefixed if not already (e.g. "brave_api_key" → "BRAVE_API_KEY").
 // Existing env vars are NOT overwritten — vault only fills gaps.
 // This allows skills/scripts to use process.env.BRAVE_API_KEY without .env files.
-func (a *Assistant) InjectVaultEnvVars() {
+func (a *Assistant) injectVaultEnvVars() {
 	keys := a.vault.List()
 	if len(keys) == 0 {
 		return
@@ -1063,39 +786,6 @@ func (a *Assistant) enqueueFollowup(msg *channels.IncomingMessage, sessionID str
 	)
 }
 
-// enqueueFollowupMessage creates a synthetic message and enqueues it for processing.
-// This is used by subagent announce to inject results back into the parent session.
-func (a *Assistant) enqueueFollowupMessage(sessionID, content, channel, chatID string) {
-	msg := &channels.IncomingMessage{
-		Content: content,
-		Channel: channel,
-		ChatID:  chatID,
-		From:    "system",
-		ID:      fmt.Sprintf("subagent-announce-%d", time.Now().UnixNano()),
-		IsGroup: strings.Contains(chatID, "@g.us"),
-	}
-
-	a.followupQueuesMu.Lock()
-	const maxFollowupQueue = 20
-	if len(a.followupQueues[sessionID]) >= maxFollowupQueue {
-		a.followupQueues[sessionID] = a.followupQueues[sessionID][1:]
-		a.logger.Warn("followup queue full, dropped oldest", "session", sessionID)
-	}
-	a.followupQueues[sessionID] = append(a.followupQueues[sessionID], msg)
-	qLen := len(a.followupQueues[sessionID])
-	a.followupQueuesMu.Unlock()
-
-	a.logger.Info("subagent result enqueued as followup",
-		"session", sessionID,
-		"queue_length", qLen,
-	)
-
-	// If the session is not currently processing, trigger immediate processing.
-	if !a.messageQueue.IsProcessing(sessionID) {
-		go a.drainFollowupQueue(sessionID)
-	}
-}
-
 // drainFollowupQueue processes messages that were enqueued while a session was
 // busy. Each followup message is processed as a new, independent agent run.
 // When there are multiple queued messages, they are combined into a single run.
@@ -1168,26 +858,6 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 	accessResult := a.accessMgr.Check(msg)
 
 	if !accessResult.Allowed {
-		// Check if this is a DM with a potential pairing token.
-		if !msg.IsGroup && a.pairingMgr != nil {
-			token := ExtractTokenFromMessage(msg.Content)
-			if token != "" {
-				approved, response, err := a.pairingMgr.ProcessTokenRedemption(
-					token, msg.From, msg.FromName)
-				if err != nil {
-					logger.Warn("pairing token error", "error", err)
-				}
-				a.sendReply(msg, response)
-				if approved {
-					// Re-check access now that user is approved.
-					accessResult = a.accessMgr.Check(msg)
-					logger.Info("access granted via pairing token",
-						"from", msg.From)
-				}
-				return
-			}
-		}
-
 		// If policy is "ask", send a one-time message.
 		if accessResult.ShouldAsk {
 			a.sendReply(msg, a.accessMgr.PendingMessage())
@@ -1204,21 +874,6 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 
 	logger.Info("access granted", "level", accessResult.Level)
 
-	// ── Step 0b: Maintenance mode check ──
-	// Allow commands through, block regular messages.
-	if a.maintenanceMgr != nil && a.maintenanceMgr.IsEnabled() {
-		if !IsCommand(msg.Content) {
-			maint := a.maintenanceMgr.Get()
-			response := "System is under maintenance."
-			if maint != nil && maint.Message != "" {
-				response = maint.Message
-			}
-			a.sendReply(msg, response)
-			logger.Info("message blocked (maintenance mode)")
-			return
-		}
-	}
-
 	// ── Step 1: Admin commands ──
 	// Check for /commands BEFORE trigger check (commands always work).
 	if IsCommand(msg.Content) {
@@ -1233,43 +888,10 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 		}
 	}
 
-	// ── Step 1.5: Intent Routing & Session Sharding ──
-	var sessionSuffix string
-	var detectedIntent string
-	if msg.Content != "" {
-		intentResult := a.intentClassifier.Classify(a.ctx, msg.Content)
-		if intentResult.Drop {
-			logger.Info("message dropped by intent classifier",
-				"reason", intentResult.Reason,
-				"score", intentResult.Score,
-			)
-			return
-		}
-
-		detectedIntent = intentResult.Intent
-		if detectedIntent != "" && detectedIntent != "bypass" {
-			if strings.HasPrefix(detectedIntent, "fast_task:") {
-				// Fast tasks get unique sessions for concurrency
-				sessionSuffix = fmt.Sprintf(":%s-%d", detectedIntent, time.Now().UnixNano())
-			} else if strings.HasPrefix(detectedIntent, "intent:") {
-				// Persona routing gets stable shared session
-				suffix := strings.TrimPrefix(detectedIntent, "intent:")
-				sessionSuffix = ":" + suffix
-			} else {
-				sessionSuffix = ":" + detectedIntent
-			}
-			logger.Info("intent classification applied",
-				"intent", detectedIntent,
-				"suffix", sessionSuffix,
-			)
-		}
-	}
-
 	// ── Step 1a: Natural language approval ──
 	// If there are pending approvals for this session and the user sends
 	// a short affirmative/negative message, treat it as an approval/denial.
-	baseSessionID := MakeSessionID(msg.Channel, msg.ChatID)
-	sessionID := baseSessionID + sessionSuffix
+	sessionID := MakeSessionID(msg.Channel, msg.ChatID)
 	if a.approvalMgr.PendingCountForSession(sessionID) > 0 {
 		action := matchNaturalApproval(msg.Content)
 		if action != "" {
@@ -1308,7 +930,7 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 	// ── Step 2: Resolve workspace ──
 	// Determine which workspace this message belongs to.
 	resolved := a.workspaceMgr.Resolve(
-		msg.Channel, msg.ChatID, msg.From, msg.IsGroup, sessionSuffix)
+		msg.Channel, msg.ChatID, msg.From, msg.IsGroup)
 
 	workspace := resolved.Workspace
 	session := resolved.Session
@@ -1321,29 +943,7 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 	if workspace.Trigger != "" {
 		trigger = workspace.Trigger
 	}
-	triggered := a.matchesTrigger(msg.Content, trigger, msg.IsGroup)
-
-	// ── Step 3a: Group policy check ──
-	// For group messages, check if we should respond based on group policy.
-	if msg.IsGroup && a.groupPolicyMgr != nil {
-		isReplyToBot := false // TODO: detect if message is a reply to bot
-		matchedTrigger := ""
-		if triggered {
-			matchedTrigger = trigger
-		}
-		if !a.groupPolicyMgr.ShouldRespond(msg.ChatID, msg.From, msg.Content, isReplyToBot, matchedTrigger) {
-			logger.Debug("group policy: not responding")
-			return
-		}
-		// Override workspace if group has a specific workspace configured.
-		if wsID := a.groupPolicyMgr.GetWorkspace(msg.ChatID); wsID != "" {
-			if altWS, ok := a.workspaceMgr.Get(wsID); ok {
-				workspace = altWS
-				logger = logger.With("workspace_override", wsID)
-			}
-		}
-	} else if !triggered {
-		// Non-group messages still need trigger match.
+	if !a.matchesTrigger(msg.Content, trigger, msg.IsGroup) {
 		return
 	}
 
@@ -1375,55 +975,9 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 	// ── Step 7: Build prompt with workspace context ──
 	promptStart := time.Now()
 	prompt := a.composeWorkspacePrompt(workspace, session, userContent)
-
-	// ── Step 7b: Agent routing (model/instructions override) ──
-	// If agent profiles are configured, route based on channel/user/group.
-	var agentProfile *AgentProfileConfig
-	var modelOverride string
-	if a.agentRouter != nil {
-		// For group messages, use ChatID as group JID.
-		groupJID := ""
-		if msg.IsGroup {
-			groupJID = msg.ChatID
-		}
-		agentProfile = a.agentRouter.Route(detectedIntent, msg.Channel, msg.From, groupJID)
-		if agentProfile != nil {
-			logger.Info("agent routed",
-				"profile", agentProfile.ID,
-				"channel", msg.Channel,
-				"user", msg.From,
-				"group", groupJID,
-			)
-
-			// Override model if specified in profile.
-			if agentProfile.Model != "" {
-				modelOverride = agentProfile.Model
-			}
-
-			// Override prompt if profile has custom instructions.
-			if agentProfile.Instructions != "" {
-				// Replace the base instructions with profile instructions.
-				// Keep workspace context but use profile's system prompt.
-				prompt = a.composePromptWithAgent(agentProfile, workspace, session, userContent)
-			}
-		}
-	}
-
-	// Apply model override from session config if not set by agent profile.
-	if modelOverride == "" {
-		modelOverride = session.GetConfig().Model
-	}
-
 	logger.Info("prompt composed",
 		"duration_ms", time.Since(promptStart).Milliseconds(),
 		"prompt_chars", len(prompt),
-		"model_override", modelOverride,
-		"agent_profile", func() string {
-			if agentProfile != nil {
-				return agentProfile.ID
-			}
-			return ""
-		}(),
 	)
 
 	// ── Step 8: Execute agent (with optional block streaming) ──
@@ -1432,11 +986,6 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 	agentCtx := ContextWithSession(a.ctx, sessionID)
 	agentCtx = ContextWithDelivery(agentCtx, msg.Channel, msg.ChatID)
 	agentCtx = ContextWithCaller(agentCtx, accessResult.Level, msg.From)
-
-	// Resolve tool profile for this workspace (workspace can override global).
-	if profile := a.resolveToolProfile(workspace); profile != nil {
-		agentCtx = ContextWithToolProfile(agentCtx, profile)
-	}
 
 	// Inject ProgressSender with per-channel cooldown.
 	// WhatsApp doesn't support editing messages, so we rate-limit progress
@@ -1495,7 +1044,7 @@ func (a *Assistant) handleMessage(msg *channels.IncomingMessage) {
 	}
 
 	agentStart := time.Now()
-	response := a.executeAgentWithStream(agentCtx, workspace.ID, session, sessionID, prompt, userContent, blockStreamer, modelOverride)
+	response := a.executeAgentWithStream(agentCtx, workspace.ID, session, sessionID, prompt, userContent, blockStreamer)
 	logger.Info("agent execution complete",
 		"agent_duration_ms", time.Since(agentStart).Milliseconds(),
 		"response_len", len(response),
@@ -1606,25 +1155,6 @@ func (a *Assistant) matchesTrigger(content, trigger string, isGroup bool) bool {
 		strings.EqualFold(content[:len(trigger)], trigger)
 }
 
-// resolveToolProfile returns the effective tool profile for a workspace.
-// Workspace profile takes precedence over global profile.
-// Returns nil if no profile is configured.
-func (a *Assistant) resolveToolProfile(ws *Workspace) *ToolProfile {
-	// Workspace profile takes precedence.
-	if ws.ToolProfile != "" {
-		if profile := GetProfile(ws.ToolProfile, a.config.Security.ToolGuard.CustomProfiles); profile != nil {
-			return profile
-		}
-	}
-
-	// Fall back to global profile.
-	if a.config.Security.ToolGuard.Profile != "" {
-		return GetProfile(a.config.Security.ToolGuard.Profile, a.config.Security.ToolGuard.CustomProfiles)
-	}
-
-	return nil
-}
-
 // composeWorkspacePrompt builds the prompt using workspace overrides.
 func (a *Assistant) composeWorkspacePrompt(ws *Workspace, session *Session, input string) string {
 	// If workspace has custom instructions, inject them as business context.
@@ -1639,53 +1169,10 @@ func (a *Assistant) composeWorkspacePrompt(ws *Workspace, session *Session, inpu
 	return a.promptComposer.Compose(session, input)
 }
 
-// composePromptWithAgent builds a prompt using agent profile instructions.
-// The agent profile's instructions and workspace directory replace the base
-// settings while preserving core workspace context.
-func (a *Assistant) composePromptWithAgent(profile *AgentProfileConfig, ws *Workspace, session *Session, input string) string {
-	// Store original instructions to restore later.
-	originalInstructions := a.config.Instructions
-
-	// Merge config to get effective settings.
-	// Workspace defines the baseline; Agent Profile provides overrides.
-	_, instructions, wsDir, _ := profile.MergeConfig(ws.Model, profile.Instructions, ws.WorkspaceDir, nil)
-
-	// Temporarily set agent's instructions.
-	a.config.Instructions = instructions
-
-	// Backup and set workspace directory in session config if provided.
-	sessionCfg := session.GetConfig()
-	originalWSDir := sessionCfg.WorkspaceDir
-	if wsDir != "" {
-		sessionCfg.WorkspaceDir = wsDir
-		session.SetConfig(sessionCfg)
-	}
-
-	// Also add workspace instructions as business context if available.
-	if ws.Instructions != "" {
-		cfg := session.GetConfig()
-		cfg.BusinessContext = ws.Instructions
-		session.SetConfig(cfg)
-	}
-
-	// Compose with agent instructions.
-	prompt := a.promptComposer.Compose(session, input)
-
-	// Restore original state.
-	a.config.Instructions = originalInstructions
-	if wsDir != "" {
-		sessionCfg.WorkspaceDir = originalWSDir
-		session.SetConfig(sessionCfg)
-	}
-
-	return prompt
-}
-
 // executeAgentWithStream runs the agentic loop, optionally streaming text
 // progressively to the channel via a BlockStreamer.
 // sessionID is the channel:chatID key used for interrupt inbox routing.
-// modelOverride specifies the model to use (empty = use default).
-func (a *Assistant) executeAgentWithStream(ctx context.Context, workspaceID string, session *Session, sessionID string, systemPrompt string, userMessage string, streamer *BlockStreamer, modelOverride string) string {
+func (a *Assistant) executeAgentWithStream(ctx context.Context, workspaceID string, session *Session, sessionID string, systemPrompt string, userMessage string, streamer *BlockStreamer) string {
 	runKey := workspaceID + ":" + session.ID
 
 	// Create interrupt inbox so follow-up messages can be injected mid-run.
@@ -1724,6 +1211,7 @@ func (a *Assistant) executeAgentWithStream(ctx context.Context, workspaceID stri
 	// prompt. Older history is summarized by session memory if enabled.
 	history := session.RecentHistory(10)
 
+	modelOverride := session.GetConfig().Model
 	agent := NewAgentRunWithConfig(a.llmClient, a.toolExecutor, a.config.Agent, a.logger)
 	agent.SetModelOverride(modelOverride)
 
@@ -1782,20 +1270,12 @@ func (a *Assistant) executeAgent(ctx context.Context, workspaceID string, sessio
 		a.activeRunsMu.Lock()
 		delete(a.activeRuns, runKey)
 		a.activeRunsMu.Unlock()
-
-		// Clear the active run marker — run completed normally.
-		a.clearRunActive(session.ID)
-
 		cancel()
 	}()
 
 	a.activeRunsMu.Lock()
 	a.activeRuns[runKey] = cancel
 	a.activeRunsMu.Unlock()
-
-	// ── Persist active run for restart recovery ──
-	// For executeAgent (CLI/WebUI), we use the session's native Channel/ChatID.
-	a.markRunActive(session.ID, session.Channel, session.ChatID, userMessage)
 
 	history := session.RecentHistory(10)
 
@@ -2027,16 +1507,6 @@ func (a *Assistant) initScheduler() {
 			jobCtx = ContextWithDelivery(jobCtx, job.Channel, job.ChatID)
 		}
 
-		// ── Persist active run for restart recovery ──
-		// We use schedulerSessionID as the DB key to avoid clashing with user's main session.
-		// On restart, resumeInterruptedRuns will resolve the channel/chatID and resume
-		// it as a foreground task in the user's chat, which is good for visibility.
-		// If channel/chatID are empty (internal job), resume might fail or skip, which is acceptable.
-		if job.Channel != "" && job.ChatID != "" {
-			a.markRunActive(schedulerSessionID, job.Channel, job.ChatID, job.Command)
-			defer a.clearRunActive(schedulerSessionID)
-		}
-
 		// Build a delivery-focused prompt. Use ComposeMinimal() to skip
 		// bootstrap files, memory search, and conversation history — this
 		// cuts the prompt from ~7600 tokens to ~500, dramatically reducing
@@ -2072,9 +1542,7 @@ func (a *Assistant) initScheduler() {
 
 		// If job has a target channel/chat, send the result.
 		if job.Channel != "" && job.ChatID != "" {
-			// Strip internal tags before sending to user
-			cleanResult := StripInternalTags(result)
-			outMsg := &channels.OutgoingMessage{Content: cleanResult}
+			outMsg := &channels.OutgoingMessage{Content: result}
 			if sendErr := a.channelMgr.Send(ctx, job.Channel, job.ChatID, outMsg); sendErr != nil {
 				a.logger.Error("failed to deliver scheduled message",
 					"job_id", job.ID, "error", sendErr,
@@ -2105,14 +1573,8 @@ func (a *Assistant) registerSkillLoaders() {
 		// through the same LLM provider (e.g. Z.AI) as DevClaw itself.
 		builtinLoader.SetAPIConfig(a.config.API.APIKey, a.config.API.BaseURL, a.config.Model)
 
-		// Inject web search config.
-		builtinLoader.SetWebSearchConfig(skills.WebSearchConfig{
-			Provider:    a.config.WebSearch.Provider,
-			BraveAPIKey: a.config.WebSearch.BraveAPIKey,
-			MaxResults:  a.config.WebSearch.MaxResults,
-		})
-
-		// Inject skill management config.
+		// Inject skill management config for skill-creator skill.
+		// Use the first ClawdHub directory, falling back to ./skills
 		skillsDir := "./skills"
 		if len(a.config.Skills.ClawdHubDirs) > 0 {
 			skillsDir = a.config.Skills.ClawdHubDirs[0]
@@ -2221,30 +1683,26 @@ func (a *Assistant) registerSystemTools() {
 	ssrfGuard := security.NewSSRFGuard(a.config.Security.SSRF, a.logger)
 	RegisterSystemTools(a.toolExecutor, sandboxRunner, a.memoryStore, a.sqliteMemory, a.config.Memory, a.scheduler, dataDir, ssrfGuard, a.vault, a.config.WebSearch)
 
+	// Register skill creator tools (including install_skill, search_skills, remove_skill).
+	skillsDir := "./skills"
+	if len(a.config.Skills.ClawdHubDirs) > 0 {
+		skillsDir = a.config.Skills.ClawdHubDirs[0]
+	}
+	RegisterSkillCreatorTools(a.toolExecutor, a.skillRegistry, skillsDir, a.logger)
+
 	// Register subagent tools (spawn, list, wait, stop).
 	RegisterSubagentTools(a.toolExecutor, a.subagentMgr, a.llmClient, a.promptComposer, a.logger)
 
 	// Register session management tools (sessions_list, sessions_send) for multi-agent routing.
 	RegisterSessionTools(a.toolExecutor, a.workspaceMgr)
 
-	// Register team tools for persistent agents and team memory.
-	if a.teamMgr != nil {
-		RegisterTeamTools(a.toolExecutor, a.teamMgr, a.devclawDB, a.scheduler, a.logger)
-	}
-
 	// Register media tools (describe_image, transcribe_audio).
 	RegisterMediaTools(a.toolExecutor, a.llmClient, a.config, a.logger)
-
-	// Register native media tools (send_image, send_audio, send_document).
-	if a.mediaSvc != nil {
-		RegisterNativeMediaTools(a.toolExecutor, a.mediaSvc, a.channelMgr, a.logger)
-	}
 
 	// Register native developer tools (git, docker, db, env, utils, codebase, testing, ops, product, IDE).
 	RegisterGitTools(a.toolExecutor)
 	RegisterDockerTools(a.toolExecutor)
 	RegisterDBTools(a.toolExecutor)
-	RegisterDBHubTools(a.toolExecutor, a.dbHub) // Database hub management tools
 	RegisterEnvTools(a.toolExecutor)
 	RegisterDevUtilTools(a.toolExecutor)
 	RegisterCodebaseTools(a.toolExecutor)
@@ -2271,11 +1729,6 @@ func (a *Assistant) registerSystemTools() {
 			a.userMgr = NewUserManager(a.config.Team)
 		}
 		RegisterMultiUserTools(a.toolExecutor, a.userMgr)
-	}
-
-	// Register browser tools if enabled.
-	if a.browserManager != nil && a.config.Browser.Enabled {
-		RegisterBrowserTools(a.toolExecutor, a.browserManager, a.logger)
 	}
 
 	a.logger.Info("system tools registered",
@@ -3176,7 +2629,7 @@ func (a *Assistant) resumeInterruptedRuns() {
 			time.Sleep(2 * time.Second)
 
 			// Resolve workspace (uses empty senderJID, non-group).
-			resolved := a.workspaceMgr.Resolve(run.Channel, run.ChatID, "", false, "")
+			resolved := a.workspaceMgr.Resolve(run.Channel, run.ChatID, "", false)
 			if resolved == nil {
 				a.logger.Error("could not resolve workspace for interrupted run",
 					"channel", run.Channel, "chat_id", run.ChatID)
@@ -3193,9 +2646,6 @@ func (a *Assistant) resumeInterruptedRuns() {
 
 			prompt := a.composeWorkspacePrompt(resolved.Workspace, session, run.UserMessage)
 
-			// Get model override from session config.
-			modelOverride := session.GetConfig().Model
-
 			// Build block streamer for progressive output.
 			blockStreamer := NewBlockStreamer(
 				DefaultBlockStreamConfig(),
@@ -3206,7 +2656,7 @@ func (a *Assistant) resumeInterruptedRuns() {
 
 			response := a.executeAgentWithStream(
 				resumeCtx, resolved.Workspace.ID, session, sessionID,
-				prompt, run.UserMessage, blockStreamer, modelOverride,
+				prompt, run.UserMessage, blockStreamer,
 			)
 
 			// Flush any remaining streamed text.
